@@ -144,5 +144,21 @@ struct sr_arphdr
     uint32_t        ar_tip;             /* target IP address            */
 } __attribute__ ((packed)) ;
 
+/* Define ICMP types */
+#ifndef ICMP_ECHO_REPLY
+#define ICMP_ECHO_REPLY 0    /* Echo Reply (ping reply) */
+#endif
+#ifndef ICMP_ECHO_REQUEST
+#define ICMP_ECHO_REQUEST 8  /* Echo Request (ping request) */ 
+#endif
+
+struct sr_icmp_hdr
+{
+    uint8_t icmp_type;  /* ICMP message type */
+    uint8_t icmp_code;  /* Error code (0 for echo request/reply) */
+    uint16_t icmp_sum;  /* Checksum */
+    uint16_t icmp_id;   /* Identifier */
+    uint16_t icmp_seq;  /* Sequence number */
+} __attribute__ ((packed));
 
 #endif /* -- SR_PROTOCOL_H -- */

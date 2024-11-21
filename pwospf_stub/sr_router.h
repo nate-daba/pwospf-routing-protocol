@@ -44,6 +44,12 @@ struct pwospf_subsys;
  * Encapsulation of the state for a single virtual router.
  *
  * -------------------------------------------------------------------------- */
+struct arp_cache_entry {
+    uint32_t ip;                    /* IP address */
+    unsigned char mac[ETHER_ADDR_LEN]; /* MAC address */
+    struct timeval added;            /* Time when the entry was added */
+    struct arp_cache_entry* next;    /* Pointer to the next entry */
+};
 
 struct sr_instance
 {
@@ -77,6 +83,17 @@ int sr_read_from_server(struct sr_instance* );
 /* -- sr_router.c -- */
 void sr_init(struct sr_instance* );
 void sr_handlepacket(struct sr_instance* , uint8_t * , unsigned int , char* );
+uint16_t checksum(void* vdata, size_t length);
+int lookup_rt(struct sr_instance* sr, uint32_t dest_ip, uint32_t* nexthop, char* out_iface);
+void process_arp_reply(struct sr_instance* sr, struct sr_arphdr* arp_reply);
+int check_arp_cache(uint32_t ip, unsigned char* mac);
+int send_arp_request(struct sr_instance* sr, uint32_t nexthop_ip, struct sr_if* out_iface);
+void sr_print_arp_cache();
+void sr_print_arp_entry(struct arp_cache_entry* entry);
+void queue_pkt(uint8_t *packet, unsigned int len, char *iface, uint32_t next_hop_ip);
+void send_queued_pkts(struct sr_instance *sr, uint32_t ip, unsigned char *mac);
+void update_arp_cache(struct sr_instance* sr, uint32_t ip, unsigned char* mac);
+int to_myself(struct sr_instance* sr, uint32_t ip);
 
 /* -- sr_if.c -- */
 void sr_add_interface(struct sr_instance* , const char* );
