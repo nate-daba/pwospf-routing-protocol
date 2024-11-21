@@ -36,6 +36,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 
+#include "sr_pwospf.h"
 #include "sr_dumper.h"
 #include "sr_router.h"
 #include "sr_if.h"
