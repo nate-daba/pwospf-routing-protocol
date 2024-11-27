@@ -24,6 +24,7 @@
 #include "sr_pwospf.h"
 #include "sr_router.h"
 #include "sr_protocol.h"
+#include "pwospf_protocol.h"
 
 struct arp_cache_entry* arp_cache = NULL; /* Global ARP cache (linked list) */
 
@@ -158,6 +159,11 @@ void sr_handlepacket(
                 return;
             }
         }
+        /* check if packet is pwospf packet */
+        else if (ip_hdr->ip_p == 89) { // OSPF Protocol
+            printf("PWOSPF packet\n");
+            pwospf_handle_packet(sr, packet, len, interface);
+        }
         /* IP packet is not for me. Forward it using routing table. */
         else 
         {    /* 2. Decrement TTL by 1.*/
@@ -290,6 +296,30 @@ void sr_handlepacket(
         printf("Unknown packet\n");
     }
 }/* end sr_ForwardPacket */
+
+void pwospf_handle_packet(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface) {
+    struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
+    struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + (ip_hdr->ip_hl * 4));
+
+    if (ospf_hdr->type == PWOSPF_TYPE_HELLO) {
+        printf("Received PWOSPF HELLO packet.\n");
+
+        struct sr_if* iface = sr_get_interface(sr, interface);
+        if (iface) {
+            struct pwospf_interface* pwospf_iface = sr->ospf_subsys->interfaces;
+            while (pwospf_iface) {
+                if (pwospf_iface->ip == iface->ip) {
+                    // Pass the Router ID and the Neighbor IP to update the neighbor table
+                    pwospf_update_neighbor(pwospf_iface, ospf_hdr->rid, ip_hdr->ip_src.s_addr);
+                    break;
+                }
+                pwospf_iface = pwospf_iface->next;
+            }
+        }
+    } else {
+        printf("Unhandled PWOSPF packet type: %d\n", ospf_hdr->type);
+    }
+}
 
 /* Function to perform the routing table lookup using the Longest Prefix Match */
 int lookup_rt(struct sr_instance* sr, uint32_t dest_ip, uint32_t* nexthop, char* out_iface) {

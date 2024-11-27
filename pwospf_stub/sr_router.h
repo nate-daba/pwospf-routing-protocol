@@ -94,6 +94,7 @@ void queue_pkt(uint8_t *packet, unsigned int len, char *iface, uint32_t next_hop
 void send_queued_pkts(struct sr_instance *sr, uint32_t ip, unsigned char *mac);
 void update_arp_cache(struct sr_instance* sr, uint32_t ip, unsigned char* mac);
 int to_myself(struct sr_instance* sr, uint32_t ip);
+void pwospf_handle_packet(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface);
 
 /* -- sr_if.c -- */
 void sr_add_interface(struct sr_instance* , const char* );

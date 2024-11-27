@@ -60,4 +60,6 @@ int pwospf_init(struct sr_instance* sr);
 void* pwospf_hello_thread(void* arg);
 void pwospf_print_subsys(struct pwospf_subsys* subsys);
 void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface);
+void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
+void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
 #endif /* SR_PWOSPF_H */

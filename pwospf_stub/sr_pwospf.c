@@ -132,15 +132,16 @@ static void* pwospf_run_thread(void* arg)
         /* -- PWOSPF subsystem functionality should start  here! -- */
 
         pwospf_lock(sr->ospf_subsys);
-        // pwospf_print_subsys(sr->ospf_subsys);
+        pwospf_print_subsys(sr->ospf_subsys);
         struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
         while (iface) {
             pwospf_send_hello(sr, iface);
+            pwospf_remove_timed_out_neighbors(iface); // Check for timed out neighbors
             iface = iface->next;
         }
         printf(" pwospf subsystem sleeping \n");
         pwospf_unlock(sr->ospf_subsys);
-        sleep(2);
+        sleep(HELLO_INTERVAL);
         printf(" pwospf subsystem awake \n");
     };
     return NULL;
@@ -168,7 +169,6 @@ void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface) {
     assert(sr);
     assert(iface);
 
-    // Allocate memory for the HELLO packet
     size_t packet_len = sizeof(struct sr_ethernet_hdr) +
                         sizeof(struct ip) +
                         sizeof(struct ospfv2_hdr) +
@@ -180,8 +180,8 @@ void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface) {
     // Fill Ethernet header
     struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*)packet;
     memset(eth_hdr->ether_dhost, 0xFF, ETHER_ADDR_LEN); // Broadcast
-    struct sr_if* sr_iface = sr_get_interface(sr, iface->name); // Use interface name
-    memcpy(eth_hdr->ether_shost, sr_iface->addr, ETHER_ADDR_LEN); // Source MAC
+    struct sr_if* sr_iface = sr_get_interface(sr, iface->name);
+    memcpy(eth_hdr->ether_shost, sr_iface->addr, ETHER_ADDR_LEN);
     eth_hdr->ether_type = htons(ETHERTYPE_IP);
 
     // Fill IP header
@@ -203,9 +203,9 @@ void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface) {
     ospf_hdr->version = PWOSPF_VERSION;
     ospf_hdr->type = PWOSPF_TYPE_HELLO;
     ospf_hdr->len = htons(sizeof(struct ospfv2_hdr) + sizeof(struct ospfv2_hello_hdr));
-    ospf_hdr->rid = iface->ip; // Use interface IP as Router ID
-    ospf_hdr->aid = 0;         // Single area
-    ospf_hdr->autype = 0;      // No authentication
+    ospf_hdr->rid = sr->ospf_subsys->router_id; // Correctly use the router's Router ID
+    ospf_hdr->aid = 0; // Single area
+    ospf_hdr->autype = 0; // No authentication
     ospf_hdr->audata = 0;
 
     // Fill HELLO header
@@ -216,11 +216,81 @@ void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface) {
     hello_hdr->helloint = htons(HELLO_INTERVAL);
 
     // Send the packet
-    sr_send_packet(sr, packet, packet_len, sr_iface->name); // Use interface name
+    sr_send_packet(sr, packet, packet_len, sr_iface->name);
 
     printf("Sent HELLO packet from interface: %s (IP: %s)\n",
            sr_iface->name,
            inet_ntoa(*(struct in_addr*)&iface->ip));
 
     free(packet); // Free allocated memory
+}
+
+void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip) {
+    assert(iface);
+
+    struct pwospf_neighbor* current = iface->neighbors;
+    struct pwospf_neighbor* prev = NULL;
+
+    // Search for the neighbor
+    while (current) {
+        if (current->router_id == router_id) {
+            // Update the neighbor's info and timestamp
+            current->neighbor_ip = neighbor_ip;
+            current->last_hello_received = time(NULL);
+            printf("Updated neighbor: Router ID: %s, Neihbor IP: %s\n",
+                   inet_ntoa(*(struct in_addr*)&router_id),
+                   inet_ntoa(*(struct in_addr*)&neighbor_ip));
+            return;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    // Neighbor not found, add a new one
+    struct pwospf_neighbor* new_neighbor = (struct pwospf_neighbor*)malloc(sizeof(struct pwospf_neighbor));
+    new_neighbor->router_id = router_id;
+    new_neighbor->neighbor_ip = neighbor_ip;
+    new_neighbor->last_hello_received = time(NULL);
+    new_neighbor->next = NULL;
+
+    if (prev) {
+        prev->next = new_neighbor;
+    } else {
+        iface->neighbors = new_neighbor;
+    }
+
+    printf("Added new neighbor: Router ID: %s, IP: %s\n",
+           inet_ntoa(*(struct in_addr*)&router_id),
+           inet_ntoa(*(struct in_addr*)&neighbor_ip));
+}
+
+void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface) {
+    assert(iface);
+
+    struct pwospf_neighbor* current = iface->neighbors;
+    struct pwospf_neighbor* prev = NULL;
+
+    time_t now = time(NULL);
+
+    while (current) {
+        if (difftime(now, current->last_hello_received) > NEIGHBOR_TIMEOUT) {
+            printf("Removing timed-out neighbor: Router ID: %s, IP: %s\n",
+                   inet_ntoa(*(struct in_addr*)&current->router_id),
+                   inet_ntoa(*(struct in_addr*)&current->neighbor_ip));
+
+            // Remove the neighbor from the list
+            if (prev) {
+                prev->next = current->next;
+            } else {
+                iface->neighbors = current->next;
+            }
+
+            struct pwospf_neighbor* to_free = current;
+            current = current->next;
+            free(to_free);
+        } else {
+            prev = current;
+            current = current->next;
+        }
+    }
 }
