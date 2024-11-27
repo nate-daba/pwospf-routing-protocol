@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "sr_if.h"
+
 /* forward declare */
 struct sr_instance;
 
@@ -34,6 +36,7 @@ struct pwospf_neighbor {
 
 /* pwospf interface structure */
 struct pwospf_interface {
+    char name[SR_IFACE_NAMELEN];     // Name of the interface (e.g., "eth0")
     uint32_t ip;                      // IP address of the interface
     uint32_t mask;                    // Subnet mask
     uint16_t helloint;                // HELLO interval (default: 10 seconds)
@@ -56,5 +59,5 @@ struct pwospf_subsys
 int pwospf_init(struct sr_instance* sr);
 void* pwospf_hello_thread(void* arg);
 void pwospf_print_subsys(struct pwospf_subsys* subsys);
-
+void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface);
 #endif /* SR_PWOSPF_H */
