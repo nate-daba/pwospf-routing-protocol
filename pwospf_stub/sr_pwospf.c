@@ -132,7 +132,7 @@ static void* pwospf_run_thread(void* arg)
         /* -- PWOSPF subsystem functionality should start  here! -- */
 
         pwospf_lock(sr->ospf_subsys);
-        pwospf_print_subsys(sr->ospf_subsys);
+        // pwospf_print_subsys(sr->ospf_subsys);
         struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
         while (iface) {
             pwospf_send_hello(sr, iface);
@@ -275,11 +275,16 @@ void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface) {
 
     time_t now = time(NULL);
 
+    char router_id_str[INET_ADDRSTRLEN];  // Buffer for Router ID string
+    char neighbor_ip_str[INET_ADDRSTRLEN]; // Buffer for Neighbor IP string
+
     while (current) {
         if (difftime(now, current->last_hello_received) > NEIGHBOR_TIMEOUT) {
-            printf("Removing timed-out neighbor: Router ID: %s, IP: %s\n",
-                   inet_ntoa(*(struct in_addr*)&current->router_id),
-                   inet_ntoa(*(struct in_addr*)&current->neighbor_ip));
+            // Convert Router ID and Neighbor IP to strings
+            inet_ntop(AF_INET, &current->router_id, router_id_str, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET, &current->neighbor_ip, neighbor_ip_str, INET_ADDRSTRLEN);
+
+            printf("Removing timed-out neighbor: Router ID: %s, IP: %s\n", router_id_str, neighbor_ip_str);
 
             // Remove the neighbor from the list
             if (prev) {
@@ -297,3 +302,4 @@ void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface) {
         }
     }
 }
+
