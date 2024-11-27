@@ -361,6 +361,7 @@ void pwospf_send_lsu(struct sr_instance* sr) {
         lsu->seq = htonl(subsys->seq++);
         lsu->num_links = htonl(num_links);
 
+        // Fill stub link
         struct pwospf_lsu_link* link = (struct pwospf_lsu_link*)(lsu->links);
         link->link_id = iface->ip;
         link->link_data = iface->mask;
