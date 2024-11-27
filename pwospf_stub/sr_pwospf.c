@@ -45,6 +45,8 @@ int pwospf_init(struct sr_instance* sr)
     /* -- handle subsystem initialization here! -- */
     struct pwospf_subsys* subsys = sr->ospf_subsys;
 
+    subsys->seq = 0; // Initialize sequence number
+
     /* -- set up router ID -- */
     // Set Router ID to the IP of the first interface
     struct sr_if* first_interface = sr->if_list;
@@ -126,18 +128,26 @@ void pwospf_unlock(struct pwospf_subsys* subsys)
 static void* pwospf_run_thread(void* arg)
 {
     struct sr_instance* sr = (struct sr_instance*)arg;
-
+    time_t last_lsu_time = time(NULL); // Initialize last LSU time
+    
     while(1)
     {
         /* -- PWOSPF subsystem functionality should start  here! -- */
-
         pwospf_lock(sr->ospf_subsys);
         // pwospf_print_subsys(sr->ospf_subsys);
+        // Periodically send HELLO messages
         struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
         while (iface) {
             pwospf_send_hello(sr, iface);
             pwospf_remove_timed_out_neighbors(iface); // Check for timed out neighbors
             iface = iface->next;
+        }
+        // Check if it's time to send an LSU
+        time_t now = time(NULL);
+        if (difftime(now, last_lsu_time) >= LSUINT) {
+            printf("Sending periodic LSU.\n");
+            pwospf_send_lsu(sr); // Call the function to send LSU
+            last_lsu_time = now; // Reset the LSU timer
         }
         printf(" pwospf subsystem sleeping \n");
         pwospf_unlock(sr->ospf_subsys);
@@ -301,5 +311,78 @@ void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface) {
             current = current->next;
         }
     }
+}
+
+void pwospf_send_lsu(struct sr_instance* sr) {
+    struct pwospf_subsys* subsys = sr->ospf_subsys;
+    assert(subsys);
+
+    struct pwospf_interface* iface = subsys->interfaces;
+    while (iface) {
+        // Build LSU packet
+        uint32_t num_links = 3; // Number of links (including the stub link)
+        size_t packet_len = sizeof(struct sr_ethernet_hdr) +
+                            sizeof(struct ip) +
+                            sizeof(struct ospfv2_hdr) +
+                            sizeof(struct pwospf_lsu) +
+                            num_links * sizeof(struct pwospf_lsu_link);
+        uint8_t* packet = (uint8_t*)malloc(packet_len);
+
+        // Fill Ethernet header
+        struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*)packet;
+        memset(eth_hdr->ether_dhost, 0xFF, ETHER_ADDR_LEN); // Broadcast
+        memcpy(eth_hdr->ether_shost, sr_get_interface(sr, iface->name)->addr, ETHER_ADDR_LEN);
+        eth_hdr->ether_type = htons(ETHERTYPE_IP);
+
+        // Fill IP header
+        struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
+        ip_hdr->ip_v = 4;
+        ip_hdr->ip_hl = 5;
+        ip_hdr->ip_tos = 0;
+        ip_hdr->ip_len = htons(packet_len - sizeof(struct sr_ethernet_hdr));
+        ip_hdr->ip_ttl = 64;
+        ip_hdr->ip_p = 89; // OSPF Protocol
+        ip_hdr->ip_src.s_addr = iface->ip;
+        ip_hdr->ip_dst.s_addr = inet_addr("224.0.0.5");
+        ip_hdr->ip_sum = checksum(ip_hdr, ip_hdr->ip_hl * 4);
+
+        // Fill OSPF header
+        struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip));
+        ospf_hdr->version = PWOSPF_VERSION;
+        ospf_hdr->type = PWOSPF_TYPE_LSU;
+        ospf_hdr->len = htons(sizeof(struct ospfv2_hdr) + sizeof(struct pwospf_lsu) + num_links * sizeof(struct pwospf_lsu_link));
+        ospf_hdr->rid = subsys->router_id;
+        ospf_hdr->aid = subsys->area_id;
+        ospf_hdr->autype = 0;
+        ospf_hdr->audata = 0;
+
+        // Fill LSU header
+        struct pwospf_lsu* lsu = (struct pwospf_lsu*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip) + sizeof(struct ospfv2_hdr));
+        lsu->seq = htonl(subsys->seq++);
+        lsu->num_links = htonl(num_links);
+
+        struct pwospf_lsu_link* link = (struct pwospf_lsu_link*)(lsu->links);
+        link->link_id = iface->ip;
+        link->link_data = iface->mask;
+        link->type = 2; // Stub link
+        link->metric = 1; // Cost
+
+        sr_send_packet(sr, packet, packet_len, iface->name);
+        printf("Sent LSU from interface: %s\n", iface->name);
+        free(packet);
+        iface = iface->next;
+    }
+}
+
+void pwospf_handle_lsu(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, uint8_t* packet) {
+    struct pwospf_lsu* lsu = (struct pwospf_lsu*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip) + sizeof(struct ospfv2_hdr));
+    uint32_t seq = ntohl(lsu->seq);
+    uint32_t num_links = ntohl(lsu->num_links);
+
+    printf("Received LSU from Router ID: %s, Seq: %u, Links: %u\n",
+           inet_ntoa(*(struct in_addr*)&ospf_hdr->rid), seq, num_links);
+
+    // Check and update the LSDB
+    // Forward LSU if new
 }
 
