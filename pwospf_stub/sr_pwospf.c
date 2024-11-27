@@ -231,15 +231,19 @@ void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, 
     struct pwospf_neighbor* current = iface->neighbors;
     struct pwospf_neighbor* prev = NULL;
 
+    char router_id_str[INET_ADDRSTRLEN];
+    char neighbor_ip_str[INET_ADDRSTRLEN];
+    strcpy(router_id_str, inet_ntoa(*(struct in_addr*)&router_id));
+    strcpy(neighbor_ip_str, inet_ntoa(*(struct in_addr*)&neighbor_ip));
+
     // Search for the neighbor
     while (current) {
         if (current->router_id == router_id) {
             // Update the neighbor's info and timestamp
             current->neighbor_ip = neighbor_ip;
             current->last_hello_received = time(NULL);
-            printf("Updated neighbor: Router ID: %s, Neihbor IP: %s\n",
-                   inet_ntoa(*(struct in_addr*)&router_id),
-                   inet_ntoa(*(struct in_addr*)&neighbor_ip));
+            printf("Updated neighbor: Router ID: %s, Neighbor IP: %s\n",
+                   router_id_str, neighbor_ip_str);
             return;
         }
         prev = current;
@@ -260,8 +264,7 @@ void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, 
     }
 
     printf("Added new neighbor: Router ID: %s, IP: %s\n",
-           inet_ntoa(*(struct in_addr*)&router_id),
-           inet_ntoa(*(struct in_addr*)&neighbor_ip));
+           router_id_str, neighbor_ip_str);
 }
 
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface) {

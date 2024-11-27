@@ -5,3 +5,4 @@ pwospf_stub/sr
 *.bin
 *.html
 ../.gitignore
+pwospf_stub/.nfs*
