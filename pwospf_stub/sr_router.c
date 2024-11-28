@@ -300,6 +300,12 @@ void sr_handlepacket(
 void pwospf_handle_packet(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface) {
     struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
     struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + (ip_hdr->ip_hl * 4));
+
+    // Validate the PWOSPF packet
+    if (!validate_pwospf_packet(sr, ospf_hdr)) {
+        return; // Invalid packet, exit the function
+    }
+    
     // Handle HELLO packets
     if (ospf_hdr->type == PWOSPF_TYPE_HELLO) {
         printf("Received PWOSPF HELLO packet.\n");
@@ -321,22 +327,9 @@ void pwospf_handle_packet(struct sr_instance* sr, uint8_t* packet, unsigned int 
     else if (ospf_hdr->type == PWOSPF_TYPE_LSU) {
         printf("Received PWOSPF LSU packet.\n");
 
-        struct pwospf_lsu_hdr* lsu_hdr = (struct pwospf_lsu_hdr*)((uint8_t*)ospf_hdr + sizeof(struct ospfv2_hdr));
+        // Process LSU packets
+        pwospf_handle_lsu(sr, ospf_hdr, packet, len, interface);
 
-        // Step 1: Validate Sequence Number
-        // if (!pwospf_validate_lsu(sr->ospf_subsys, ospf_hdr->rid, lsu_hdr->seq)) {
-        //     printf("Discarded LSU packet: stale sequence number.\n");
-        //     return;
-        // }
-
-        // Step 2: Update Topology Database
-        // pwospf_update_topology(sr->ospf_subsys, ospf_hdr->rid, lsu_hdr);
-
-        // Step 3: Recompute Routing Table
-        // pwospf_recompute_routing_table(sr);
-
-        // Step 4: Forward the LSU Packet
-        // pwospf_forward_lsu(sr, packet, len, interface);
     }
     // Handle other PWOSPF packet types
     else {

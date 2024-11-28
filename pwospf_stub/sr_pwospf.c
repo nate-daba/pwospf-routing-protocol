@@ -8,6 +8,7 @@
  *---------------------------------------------------------------------------*/
 
 #include <stdio.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -44,8 +45,9 @@ int pwospf_init(struct sr_instance* sr)
 
     /* -- handle subsystem initialization here! -- */
     struct pwospf_subsys* subsys = sr->ospf_subsys;
-
+    
     subsys->seq = 0; // Initialize sequence number
+    subsys->topology = NULL; // Initialize topology database
 
     /* -- set up router ID -- */
     // Set Router ID to the IP of the first interface
@@ -175,6 +177,48 @@ void pwospf_print_subsys(struct pwospf_subsys* subsys) {
     printf("\n");
 }
 
+int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr) {
+    assert(sr);
+    assert(ospf_hdr);
+
+    if (ospf_hdr->version != PWOSPF_VERSION) {
+        printf("Dropped PWOSPF packet: Unsupported version %d\n", ospf_hdr->version);
+        return 0;
+    }
+
+    if (ospf_hdr->aid != sr->ospf_subsys->area_id) {
+        printf("Dropped PWOSPF packet: Area ID mismatch\n");
+        return 0;
+    }
+
+    if (ospf_hdr->autype != 0 || ospf_hdr->audata != 0) {
+        printf("Dropped PWOSPF packet: Unsupported authentication\n");
+        return 0;
+    }
+
+    // Verify checksum
+    uint16_t original_csum = ospf_hdr->csum; // Save the original checksum
+    ospf_hdr->csum = 0;                      // Set checksum field to 0 for calculation
+
+    // Copy the packed structure to an aligned buffer
+    uint8_t aligned_hdr[sizeof(struct ospfv2_hdr)];
+    memcpy(aligned_hdr, ospf_hdr, sizeof(struct ospfv2_hdr));
+
+    // Calculate the checksum using the aligned buffer
+    uint16_t computed_csum = checksum_pwospf((uint16_t*)aligned_hdr, sizeof(struct ospfv2_hdr) / 2);
+
+    if (original_csum != computed_csum) {
+        printf("Dropped PWOSPF packet: Checksum verification failed\n");
+        printf("Expected checksum: 0x%04x, Computed checksum: 0x%04x\n",
+               ntohs(original_csum), computed_csum);
+        ospf_hdr->csum = original_csum; // Restore original checksum
+        return 0;
+    }
+
+    ospf_hdr->csum = original_csum; // Restore original checksum
+    return 1; // Valid packet
+}
+
 void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface) {
     assert(sr);
     assert(iface);
@@ -187,14 +231,14 @@ void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface) {
     uint8_t* packet = (uint8_t*)malloc(packet_len);
     memset(packet, 0, packet_len);
 
-    // Fill Ethernet header
+    // Construct Ethernet header
     struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*)packet;
     memset(eth_hdr->ether_dhost, 0xFF, ETHER_ADDR_LEN); // Broadcast
     struct sr_if* sr_iface = sr_get_interface(sr, iface->name);
     memcpy(eth_hdr->ether_shost, sr_iface->addr, ETHER_ADDR_LEN);
     eth_hdr->ether_type = htons(ETHERTYPE_IP);
 
-    // Fill IP header
+    // Construct IP header
     struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
     ip_hdr->ip_v = 4;
     ip_hdr->ip_hl = 5;
@@ -208,17 +252,24 @@ void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface) {
     ip_hdr->ip_dst.s_addr = inet_addr("224.0.0.5"); // AllSPFRouters
     ip_hdr->ip_sum = checksum(ip_hdr, ip_hdr->ip_hl * 4);
 
-    // Fill OSPF header
+    // Construct PWOSPF header
     struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip));
     ospf_hdr->version = PWOSPF_VERSION;
     ospf_hdr->type = PWOSPF_TYPE_HELLO;
     ospf_hdr->len = htons(sizeof(struct ospfv2_hdr) + sizeof(struct ospfv2_hello_hdr));
-    ospf_hdr->rid = sr->ospf_subsys->router_id; // Correctly use the router's Router ID
+    ospf_hdr->rid = sr->ospf_subsys->router_id;
     ospf_hdr->aid = 0; // Single area
-    ospf_hdr->autype = 0; // No authentication
+    ospf_hdr->autype = 0;
     ospf_hdr->audata = 0;
 
-    // Fill HELLO header
+    ospf_hdr->csum = 0; // Set checksum field to 0 for calculation
+
+    // Use an aligned buffer for checksum calculation
+    uint8_t aligned_hdr[sizeof(struct ospfv2_hdr)];
+    memcpy(aligned_hdr, ospf_hdr, sizeof(struct ospfv2_hdr));
+    ospf_hdr->csum = checksum_pwospf((uint16_t*)aligned_hdr, sizeof(struct ospfv2_hdr) / 2);
+
+    // Construct HELLO header
     struct ospfv2_hello_hdr* hello_hdr = (struct ospfv2_hello_hdr*)(packet + sizeof(struct sr_ethernet_hdr) +
                                                                     sizeof(struct ip) +
                                                                     sizeof(struct ospfv2_hdr));
@@ -327,26 +378,30 @@ void pwospf_send_lsu(struct sr_instance* sr) {
                             sizeof(struct pwospf_lsu) +
                             num_links * sizeof(struct pwospf_lsu_link);
         uint8_t* packet = (uint8_t*)malloc(packet_len);
+        memset(packet, 0, packet_len);
 
-        // Fill Ethernet header
+        // Construct Ethernet header
         struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*)packet;
         memset(eth_hdr->ether_dhost, 0xFF, ETHER_ADDR_LEN); // Broadcast
-        memcpy(eth_hdr->ether_shost, sr_get_interface(sr, iface->name)->addr, ETHER_ADDR_LEN);
+        struct sr_if* sr_iface = sr_get_interface(sr, iface->name);
+        memcpy(eth_hdr->ether_shost, sr_iface->addr, ETHER_ADDR_LEN);
         eth_hdr->ether_type = htons(ETHERTYPE_IP);
 
-        // Fill IP header
+        // Construct IP header
         struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
         ip_hdr->ip_v = 4;
         ip_hdr->ip_hl = 5;
         ip_hdr->ip_tos = 0;
         ip_hdr->ip_len = htons(packet_len - sizeof(struct sr_ethernet_hdr));
+        ip_hdr->ip_id = 0;
+        ip_hdr->ip_off = 0;
         ip_hdr->ip_ttl = 64;
         ip_hdr->ip_p = 89; // OSPF Protocol
         ip_hdr->ip_src.s_addr = iface->ip;
-        ip_hdr->ip_dst.s_addr = inet_addr("224.0.0.5");
+        ip_hdr->ip_dst.s_addr = inet_addr("224.0.0.5"); // AllSPFRouters
         ip_hdr->ip_sum = checksum(ip_hdr, ip_hdr->ip_hl * 4);
 
-        // Fill OSPF header
+        // Construct OSPF header
         struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip));
         ospf_hdr->version = PWOSPF_VERSION;
         ospf_hdr->type = PWOSPF_TYPE_LSU;
@@ -356,12 +411,20 @@ void pwospf_send_lsu(struct sr_instance* sr) {
         ospf_hdr->autype = 0;
         ospf_hdr->audata = 0;
 
-        // Fill LSU header
+        // Set checksum to 0 for calculation
+        ospf_hdr->csum = 0;
+
+        // Use an aligned buffer for checksum calculation
+        uint8_t aligned_hdr[sizeof(struct ospfv2_hdr)];
+        memcpy(aligned_hdr, ospf_hdr, sizeof(struct ospfv2_hdr));
+        ospf_hdr->csum = checksum_pwospf((uint16_t*)aligned_hdr, sizeof(struct ospfv2_hdr) / 2);
+        
+        // Construct LSU header
         struct pwospf_lsu* lsu = (struct pwospf_lsu*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip) + sizeof(struct ospfv2_hdr));
         lsu->seq = htonl(subsys->seq++);
         lsu->num_links = htonl(num_links);
 
-        // Fill stub link
+        // Construct stub link
         struct pwospf_lsu_link* link = (struct pwospf_lsu_link*)(lsu->links);
         link->link_id = iface->ip;
         link->link_data = iface->mask;
@@ -375,7 +438,27 @@ void pwospf_send_lsu(struct sr_instance* sr) {
     }
 }
 
-void pwospf_handle_lsu(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, uint8_t* packet) {
+int pwospf_validate_lsu(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t seq) {
+    assert(subsys);
+
+    // Iterate through the topology database
+    struct pwospf_topology_entry* entry = subsys->topology;
+    while (entry) {
+        if (entry->router_id == router_id) {
+            // If entry exists, check the sequence number
+            if (seq <= entry->last_seq) {
+                return 0; // Sequence number is stale or duplicate
+            }
+            return 1; // Sequence number is valid
+        }
+        entry = entry->next;
+    }
+
+    // If no entry exists for this router, consider it valid
+    return 1;
+}
+
+void pwospf_handle_lsu(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, uint8_t* packet, unsigned int len, char* interface) {
     struct pwospf_lsu* lsu = (struct pwospf_lsu*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip) + sizeof(struct ospfv2_hdr));
     uint32_t seq = ntohl(lsu->seq);
     uint32_t num_links = ntohl(lsu->num_links);
@@ -383,7 +466,67 @@ void pwospf_handle_lsu(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, uint
     printf("Received LSU from Router ID: %s, Seq: %u, Links: %u\n",
            inet_ntoa(*(struct in_addr*)&ospf_hdr->rid), seq, num_links);
 
-    // Check and update the LSDB
-    // Forward LSU if new
+    struct pwospf_subsys* subsys = sr->ospf_subsys;
+
+    // Step 1: Validate Sequence Number
+    if (!pwospf_validate_lsu(subsys, ospf_hdr->rid, seq)) {
+        printf("Discarded LSU packet: stale sequence number.\n");
+        return;
+    }
+
+    // Step 2: Update Topology Database
+    struct pwospf_topology_entry* entry = subsys->topology;
+    while (entry) {
+        if (entry->router_id == ospf_hdr->rid) {
+            // Update the existing entry
+            free(entry->advertisements); // Free old LSAs
+            entry->advertisements = malloc(num_links * sizeof(struct pwospf_lsa));
+            memcpy(entry->advertisements, lsu->links, num_links * sizeof(struct pwospf_lsa));
+            entry->num_links = num_links;
+            entry->last_seq = seq;
+            entry->last_update = time(NULL); // Update the timestamp
+            break;
+        }
+        entry = entry->next;
+    }
+
+    // If no entry exists, create a new one
+    if (!entry) {
+        struct pwospf_topology_entry* new_entry = malloc(sizeof(struct pwospf_topology_entry));
+        new_entry->router_id = ospf_hdr->rid;
+        new_entry->last_seq = seq;
+        new_entry->num_links = num_links;
+        new_entry->advertisements = malloc(num_links * sizeof(struct pwospf_lsa));
+        memcpy(new_entry->advertisements, lsu->links, num_links * sizeof(struct pwospf_lsa));
+        new_entry->last_update = time(NULL);
+        new_entry->next = subsys->topology;
+        subsys->topology = new_entry;
+    }
+
+    printf("Updated topology for Router ID: %s\n", inet_ntoa(*(struct in_addr*)&ospf_hdr->rid));
+
+    // Step 3: Forward LSU Packet
+    struct pwospf_interface* iface = subsys->interfaces;
+    while (iface) {
+        if (strcmp(iface->name, interface) != 0) { // Don't forward to the incoming interface
+            sr_send_packet(sr, packet, len, iface->name);
+            printf("Forwarded LSU on interface: %s\n", iface->name);
+        }
+        iface = iface->next;
+    }
+}
+
+// PWOSPF-specific checksum calculation
+uint16_t checksum_pwospf(uint16_t* buf, size_t count) {
+    uint32_t sum = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        sum += ntohs(buf[i]);  // Convert network-byte-order to host-byte-order
+        if (sum > 0xFFFF) {    // Handle carry
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+    }
+
+    return ~((sum & 0xFFFF));  // Finalize checksum
 }
 

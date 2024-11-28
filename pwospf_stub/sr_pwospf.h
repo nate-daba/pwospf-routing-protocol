@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "sr_if.h"
+#include "pwospf_protocol.h" // Ensure this header defines struct ospfv2_hdr
 
 /* forward declare */
 struct sr_instance;
@@ -70,9 +71,28 @@ struct pwospf_subsys
 
     uint32_t seq;       // Sequence number for LSU packets
 
+    struct pwospf_topology_entry* topology; // Topology database (linked list)
+
     /* -- thread and single lock for pwospf subsystem -- */
     pthread_t thread;       // HELLO thread
     pthread_mutex_t lock;   // Mutex lock for thread synchronization
+};
+
+/* Link State Advertisement (LSA) structure */
+struct pwospf_lsa {
+    uint32_t subnet;     // Subnet number of the link
+    uint32_t mask;       // Subnet mask of the link
+    uint32_t router_id;  // Router ID of the neighbor on the link (0 if no neighbor)
+};
+
+/* Topology database entry */
+struct pwospf_topology_entry {
+    uint32_t router_id;                 // Router ID of the entry
+    uint32_t last_seq;                  // Last sequence number received from this router
+    uint32_t num_links;                 // Number of LSAs advertised by this router
+    struct pwospf_lsa* advertisements;  // Dynamically allocated array of LSAs
+    time_t last_update;                 // Timestamp of the last received LSU
+    struct pwospf_topology_entry* next; // Pointer to the next entry in the list
 };
 
 int pwospf_init(struct sr_instance* sr);
@@ -81,4 +101,9 @@ void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface);
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
 void pwospf_send_lsu(struct sr_instance* sr);
+int pwospf_validate_lsu(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t seq);
+void pwospf_handle_lsu(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, uint8_t* packet, unsigned int len, char* interface);
+int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr);
+// uint16_t checksum_pwospf(uint8_t* data, size_t length, size_t auth_offset, size_t auth_length);
+uint16_t checksum_pwospf(uint16_t* buf, size_t count);
 #endif /* SR_PWOSPF_H */
