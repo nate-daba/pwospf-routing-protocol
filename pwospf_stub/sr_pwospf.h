@@ -28,6 +28,48 @@ struct sr_instance;
 #define NEIGHBOR_TIMEOUT (3 * HELLO_INTERVAL)
 #define LSUINT 30
 
+/* -----------------------------------------------------------------
+ * PWOSPF Data Structures
+ * -----------------------------------------------------------------
+ */
+
+// --- Router ---
+// Represents a single router in the PWOSPF topology.
+struct pwospf_router {
+    uint32_t router_id;       // Router ID, typically the IP address of the first interface.
+    uint32_t area_id;         // Area ID (set to 0 for this project).
+    uint16_t lsu_interval;    // Time interval (in seconds) between Link State Updates.
+    uint32_t last_sequence;   // Last received sequence number from LSUs.
+    struct pwospf_interface *interfaces; // List of interfaces on this router.
+    struct pwospf_router *next;   // Pointer to the next router in the topology (linked list).
+};
+
+// --- Interface ---
+// Represents a network interface on a router.
+struct pwospf_interface {
+    char name[SR_IFACE_NAMELEN];     // Interface name (e.g., "eth0").
+    uint32_t ip;                    // IP address of the interface.
+    uint32_t mask;                  // Subnet mask.
+    uint16_t helloint;              // HELLO interval (default: 10 seconds).
+    struct pwospf_neighbor* neighbors; // List of neighbors reachable via this interface.
+    struct pwospf_interface* next;  // Pointer to the next interface in the list.
+};
+
+struct pwospf_subsys
+{
+    /* -- pwospf subsystem state variables here -- */
+    uint32_t router_id;     // ID of the router, typically the IP of the first interface
+    uint32_t area_id;       // Single OSPF area for this project (set to 0)
+    uint16_t lsu_interval;  // Time interval between LSUs
+    uint32_t seq;           // Sequence number for LSU packets
+    struct pwospf_interface *interfaces; // Linked list of router interfaces
+    struct pwospf_router* topology;      // Topology database (linked list)
+    
+    /* -- thread and single lock for pwospf subsystem -- */
+    pthread_t thread;       // HELLO thread
+    pthread_mutex_t lock;   // Mutex lock for thread synchronization
+};
+
 /* pwospf lsu link structure */
 struct pwospf_lsu_link {
     uint32_t link_id;   // Subnet IP address
@@ -52,31 +94,6 @@ struct pwospf_lsu {
     struct pwospf_lsu_link links[]; // Variable length array of links
 };
 
-/* pwospf interface structure */
-struct pwospf_interface {
-    char name[SR_IFACE_NAMELEN];     // Name of the interface (e.g., "eth0")
-    uint32_t ip;                      // IP address of the interface
-    uint32_t mask;                    // Subnet mask
-    uint16_t helloint;                // HELLO interval (default: 10 seconds)
-    struct pwospf_neighbor* neighbors; // List of neighbors reachable via this interface
-    struct pwospf_interface* next;    // Pointer to the next interface (linked list)
-};
-
-struct pwospf_subsys
-{
-    /* -- pwospf subsystem state variables here -- */
-    uint32_t router_id; // ID of the router, typically the IP of the first interface
-    uint32_t area_id;   // Single OSPF area for this project (set to 0)
-    struct pwospf_interface *interfaces; // Linked list of router interfaces
-
-    uint32_t seq;       // Sequence number for LSU packets
-
-    struct pwospf_topology_entry* topology; // Topology database (linked list)
-
-    /* -- thread and single lock for pwospf subsystem -- */
-    pthread_t thread;       // HELLO thread
-    pthread_mutex_t lock;   // Mutex lock for thread synchronization
-};
 
 /* Link State Advertisement (LSA) structure */
 struct pwospf_lsa {
@@ -97,7 +114,9 @@ struct pwospf_topology_entry {
 
 int pwospf_init(struct sr_instance* sr);
 void pwospf_print_subsys(struct pwospf_subsys* subsys);
-void pwospf_send_hello(struct sr_instance* sr, struct pwospf_interface* iface);
+void pwospf_send_hello(struct sr_instance* sr);
+void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interface);
+
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
 void pwospf_send_lsu(struct sr_instance* sr);

@@ -305,31 +305,17 @@ void pwospf_handle_packet(struct sr_instance* sr, uint8_t* packet, unsigned int 
     if (!validate_pwospf_packet(sr, ospf_hdr)) {
         return; // Invalid packet, exit the function
     }
-    
+
     // Handle HELLO packets
     if (ospf_hdr->type == PWOSPF_TYPE_HELLO) {
         printf("Received PWOSPF HELLO packet.\n");
-
-        struct sr_if* iface = sr_get_interface(sr, interface);
-        if (iface) {
-            struct pwospf_interface* pwospf_iface = sr->ospf_subsys->interfaces;
-            while (pwospf_iface) {
-                if (pwospf_iface->ip == iface->ip) {
-                    // Pass the Router ID and the Neighbor IP to update the neighbor table
-                    pwospf_update_neighbor(pwospf_iface, ospf_hdr->rid, ip_hdr->ip_src.s_addr);
-                    break;
-                }
-                pwospf_iface = pwospf_iface->next;
-            }
-        }
+        handle_pwospf_hello(sr, packet, interface);
     }
-    // Handle LSU packets 
+    // Handle LSU packets
     else if (ospf_hdr->type == PWOSPF_TYPE_LSU) {
         printf("Received PWOSPF LSU packet.\n");
-
         // Process LSU packets
-        pwospf_handle_lsu(sr, ospf_hdr, packet, len, interface);
-
+        // pwospf_handle_lsu(sr, ospf_hdr, packet, len, interface);
     }
     // Handle other PWOSPF packet types
     else {

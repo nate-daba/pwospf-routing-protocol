@@ -552,17 +552,17 @@ sr_ether_addrs_match_interface( struct sr_instance* sr, /* borrowed */
         fprintf( stderr, "** Error, interface %s, does not exist\n", name);
         return 0;
     }
-    printf("Interface name: %s\n", name);
-    printf("Interface MAC: ");
-    for (int i = 0; i < ETHER_ADDR_LEN; i++) {
-        printf("%02x", iface->addr[i]);
-        if (i < ETHER_ADDR_LEN - 1) printf(":");
-    }
-    printf("\nPacket Source MAC: ");
-    for (int i = 0; i < ETHER_ADDR_LEN; i++) {
-        printf("%02x", ether_hdr->ether_shost[i]);
-        if (i < ETHER_ADDR_LEN - 1) printf(":");
-    }
+    // printf("Interface name: %s\n", name);
+    // printf("Interface MAC: ");
+    // for (int i = 0; i < ETHER_ADDR_LEN; i++) {
+    //     printf("%02x", iface->addr[i]);
+    //     if (i < ETHER_ADDR_LEN - 1) printf(":");
+    // }
+    // printf("\nPacket Source MAC: ");
+    // for (int i = 0; i < ETHER_ADDR_LEN; i++) {
+    //     printf("%02x", ether_hdr->ether_shost[i]);
+    //     if (i < ETHER_ADDR_LEN - 1) printf(":");
+    // }
     printf("\n");
     if ( memcmp( ether_hdr->ether_shost, iface->addr, ETHER_ADDR_LEN) != 0 )
     {
