@@ -458,7 +458,7 @@ void pwospf_check_on_neighbors(struct sr_instance* sr) {
 
                 // Initiate link state update flood
                 printf("Initiating Link State Update due to neighbor removal.\n");
-                // pwospf_trigger_lsu(sr); // Uncomment when LSU implementation is ready
+                pwospf_send_lsu(sr, NULL);
             } else {
                 // Move to the next neighbor
                 prev = current;

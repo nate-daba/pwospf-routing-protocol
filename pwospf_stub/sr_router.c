@@ -87,7 +87,7 @@ void sr_handlepacket(
     assert(packet);
     assert(interface);
 
-    printf("*** -> Received packet of length %d \n",len);
+    // printf("*** -> Received packet of length %d \n",len);
 
     /* determine to forward or not */
     struct sr_ethernet_hdr *e_hdr = (struct sr_ethernet_hdr *)packet;
