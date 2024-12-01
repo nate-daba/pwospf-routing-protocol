@@ -103,26 +103,28 @@ struct pwospf_lsa {
 };
 
 /* Topology database entry */
-struct pwospf_topology_entry {
-    uint32_t router_id;                 // Router ID of the entry
-    uint32_t last_seq;                  // Last sequence number received from this router
-    uint32_t num_links;                 // Number of LSAs advertised by this router
-    struct pwospf_lsa* advertisements;  // Dynamically allocated array of LSAs
-    time_t last_update;                 // Timestamp of the last received LSU
-    struct pwospf_topology_entry* next; // Pointer to the next entry in the list
+struct topology_db_entry {
+    uint32_t router_id;                   // Router ID of the advertising router
+    uint32_t seq;                         // Sequence number of the last received LSU
+    uint32_t num_links;                   // Number of advertised links
+    struct ospfv2_lsu* advertisements;    // Array of advertised links
+    time_t last_update;                   // Last time this entry was updated
+    struct topology_db_entry* next;       // Pointer to the next entry in the database
 };
 
 int pwospf_init(struct sr_instance* sr);
 void pwospf_print_subsys(struct pwospf_subsys* subsys);
-void pwospf_send_hello(struct sr_instance* sr);
+void send_pwospf_hello(struct sr_instance* sr);
 void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interface);
+void pwospf_check_on_neighbors(struct sr_instance* sr);
+int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, unsigned int ospf_len) ;
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
-void pwospf_send_lsu(struct sr_instance* sr);
+void pwospf_send_lsu(struct sr_instance* sr, const char* exclude_iface);
 int pwospf_validate_lsu(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t seq);
 void pwospf_handle_lsu(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, uint8_t* packet, unsigned int len, char* interface);
-int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr);
+
 // uint16_t checksum_pwospf(uint8_t* data, size_t length, size_t auth_offset, size_t auth_length);
 uint16_t checksum_pwospf(uint16_t* buf, size_t count);
 #endif /* SR_PWOSPF_H */

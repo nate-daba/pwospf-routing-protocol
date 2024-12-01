@@ -117,31 +117,37 @@ void pwospf_unlock(struct pwospf_subsys* subsys)
  *
  *---------------------------------------------------------------------*/
 
-static void* pwospf_run_thread(void* arg)
-{
+static void* pwospf_run_thread(void* arg) {
     struct sr_instance* sr = (struct sr_instance*)arg;
-    // time_t last_lsu_time = time(NULL); // Initialize last LSU time
-    
-    while(1)
-    {
-        /* -- PWOSPF subsystem functionality should start  here! -- */
+    time_t last_lsu_time = time(NULL); // Initialize last LSU time
+
+    while (1) {
+        /* -- PWOSPF subsystem functionality should start here! -- */
         pwospf_lock(sr->ospf_subsys);
-        // Periodically send HELLO messages
-        pwospf_send_hello(sr);
 
+        // Send periodic HELLO messages
+        printf("Sending HELLO messages.\n");
+        send_pwospf_hello(sr);
 
-        // // Check if it's time to send an LSU
-        // time_t now = time(NULL);
-        // if (difftime(now, last_lsu_time) >= LSUINT) {
-        //     printf("Sending periodic LSU.\n");
-        //     pwospf_send_lsu(sr); // Call the function to send LSU
-        //     last_lsu_time = now; // Reset the LSU timer
-        // }
-        printf(" pwospf subsystem sleeping \n");
+        // Check for timed-out neighbors
+        printf("Checking neighbors for timeouts.\n");
+        pwospf_check_on_neighbors(sr);
+
+        // Check if it's time to send a periodic LSU
+        time_t now = time(NULL);
+        if (difftime(now, last_lsu_time) >= LSUINT) {
+            printf("Sending periodic LSU.\n");
+            pwospf_send_lsu(sr, NULL); // Send LSU
+            last_lsu_time = now; // Reset the LSU timer
+        }
+
         pwospf_unlock(sr->ospf_subsys);
-        sleep(HELLO_INTERVAL);
-        printf("pwospf subsystem awake \n");
-    };
+
+        printf("PWOSPF subsystem sleeping for %d seconds.\n", HELLO_INTERVAL);
+        sleep(HELLO_INTERVAL); // Sleep for HELLO_INTERVAL seconds
+        printf("PWOSPF subsystem awake.\n");
+    }
+
     return NULL;
 } /* -- run_ospf_thread -- */
 
@@ -163,10 +169,11 @@ void pwospf_print_subsys(struct pwospf_subsys* subsys) {
     printf("\n");
 }
 
-int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr) {
+int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, unsigned int ospf_len) {
     assert(sr);
     assert(ospf_hdr);
 
+    // Validate OSPF header fields common to all packet types
     if (ospf_hdr->version != PWOSPF_VERSION) {
         printf("Dropped PWOSPF packet: Unsupported version %d\n", ospf_hdr->version);
         return 0;
@@ -182,22 +189,54 @@ int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr) 
         return 0;
     }
 
-    // Verify checksum
+    // Verify checksum based on packet type
     uint16_t original_csum = ospf_hdr->csum; // Save the original checksum
     ospf_hdr->csum = 0;                      // Set checksum field to 0 for calculation
 
-    // Copy the packed structure to an aligned buffer
-    uint8_t aligned_hdr[sizeof(struct ospfv2_hdr)];
-    memcpy(aligned_hdr, ospf_hdr, sizeof(struct ospfv2_hdr));
+    if (ospf_hdr->type == PWOSPF_TYPE_HELLO) {
 
-    // Calculate the checksum using the aligned buffer
-    uint16_t computed_csum = checksum_pwospf((uint16_t*)aligned_hdr, sizeof(struct ospfv2_hdr) / 2);
+        // Use the fixed checksum calculation for HELLO packets
+        uint8_t aligned_hdr[sizeof(struct ospfv2_hdr)];
+        memcpy(aligned_hdr, ospf_hdr, sizeof(struct ospfv2_hdr));
+        uint16_t computed_csum = checksum_pwospf((uint16_t*)aligned_hdr, sizeof(struct ospfv2_hdr) / 2);
 
-    if (original_csum != computed_csum) {
-        printf("Dropped PWOSPF packet: Checksum verification failed\n");
-        printf("Expected checksum: 0x%04x, Computed checksum: 0x%04x\n",
-               ntohs(original_csum), computed_csum);
-        ospf_hdr->csum = original_csum; // Restore original checksum
+        if (original_csum != computed_csum) {
+            printf("Dropped PWOSPF HELLO packet: Checksum verification failed\n");
+            printf("  Original Checksum: 0x%04x\n", ntohs(original_csum));
+            printf("  Computed Checksum: 0x%04x\n", computed_csum);
+            return 0;
+        }
+    } else if (ospf_hdr->type == PWOSPF_TYPE_LSU) {
+
+        // Allocate aligned buffer for LSU checksum calculation
+        size_t aligned_len = ospf_len + (ospf_len % 2); // Ensure even length
+        uint8_t* aligned_buf = (uint8_t*)malloc(aligned_len);
+        if (!aligned_buf) {
+            perror("Failed to allocate memory for checksum buffer");
+            return 0;
+        }
+
+        // Copy the OSPF payload into the aligned buffer
+        memcpy(aligned_buf, ospf_hdr, ospf_len);
+
+        // Pad with zero if the payload length is odd
+        if (ospf_len % 2 != 0) {
+            aligned_buf[ospf_len] = 0;
+        }
+
+        // Calculate the checksum
+        uint16_t computed_csum = checksum_pwospf((uint16_t*)aligned_buf, aligned_len / 2);
+
+        free(aligned_buf); // Free the allocated buffer
+
+        if (original_csum != computed_csum) {
+            printf("Dropped PWOSPF LSU packet: Checksum verification failed\n");
+            printf("  Original Checksum: 0x%04x\n", ntohs(original_csum));
+            printf("  Computed Checksum: 0x%04x\n", computed_csum);
+            return 0;
+        }
+    } else {
+        printf("Dropped PWOSPF packet: Unsupported type %d\n", ospf_hdr->type);
         return 0;
     }
 
@@ -205,7 +244,7 @@ int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr) 
     return 1; // Valid packet
 }
 
-void pwospf_send_hello(struct sr_instance* sr) {
+void send_pwospf_hello(struct sr_instance* sr) {
     assert(sr);
 
     struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
@@ -251,12 +290,24 @@ void pwospf_send_hello(struct sr_instance* sr) {
         ospf_hdr->autype = 0;
         ospf_hdr->audata = 0;
 
-        ospf_hdr->csum = 0; // Set checksum field to 0 for calculation
+        // OSPF checksum calculation
+        ospf_hdr->csum = 0; // Clear for checksum calculation
 
-        // Use an aligned buffer for checksum calculation
-        uint8_t aligned_hdr[sizeof(struct ospfv2_hdr)];
-        memcpy(aligned_hdr, ospf_hdr, sizeof(struct ospfv2_hdr));
-        ospf_hdr->csum = checksum_pwospf((uint16_t*)aligned_hdr, sizeof(struct ospfv2_hdr) / 2);
+        size_t ospf_len = sizeof(struct ospfv2_hdr) + sizeof(struct ospfv2_hello_hdr);
+        size_t aligned_len = ospf_len + (ospf_len % 2); // Ensure even length
+        uint8_t* aligned_buf = (uint8_t*)malloc(aligned_len);
+        if (!aligned_buf) {
+            perror("Failed to allocate memory for checksum buffer");
+            return;
+        }
+
+        memcpy(aligned_buf, ospf_hdr, ospf_len);
+        if (ospf_len % 2 != 0) {
+            aligned_buf[ospf_len] = 0; // Add padding
+        }
+
+        ospf_hdr->csum = checksum_pwospf((uint16_t*)aligned_buf, aligned_len / 2);
+        free(aligned_buf);
 
         // Construct HELLO header
         struct ospfv2_hello_hdr* hello_hdr = (struct ospfv2_hello_hdr*)(packet + sizeof(struct sr_ethernet_hdr) +
@@ -268,9 +319,9 @@ void pwospf_send_hello(struct sr_instance* sr) {
         // Send the packet
         sr_send_packet(sr, packet, packet_len, sr_iface->name);
 
-        printf("Sent HELLO packet from interface: %s (IP: %s)\n",
-            sr_iface->name,
-            inet_ntoa(*(struct in_addr*)&iface->ip));
+        // printf("Sent HELLO packet from interface: %s (IP: %s)\n",
+        //     sr_iface->name,
+        //     inet_ntoa(*(struct in_addr*)&iface->ip));
 
         free(packet); // Free allocated memory
         iface = iface->next; // Move to the next interface
@@ -363,108 +414,106 @@ void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interfac
 
     printf("No matching PWOSPF interface for HELLO packet received on %s\n", interface);
 }
-// void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip) {
-//     assert(iface);
 
-//     // struct pwospf_neighbor* current = iface->neighbors;
-//     struct pwospf_neighbor* prev = NULL;
+void pwospf_check_on_neighbors(struct sr_instance* sr) {
+    assert(sr);
 
-//     char router_id_str[INET_ADDRSTRLEN];
-//     char neighbor_ip_str[INET_ADDRSTRLEN];
-//     strcpy(router_id_str, inet_ntoa(*(struct in_addr*)&router_id));
-//     strcpy(neighbor_ip_str, inet_ntoa(*(struct in_addr*)&neighbor_ip));
+    struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
+    time_t now = time(NULL);
 
-//     // Search for the neighbor
-//     while (current) {
-//         if (current->router_id == router_id) {
-//             // Update the neighbor's info and timestamp
-//             current->neighbor_ip = neighbor_ip;
-//             current->last_hello_received = time(NULL);
-//             printf("Updated neighbor: Router ID: %s, Neighbor IP: %s\n",
-//                    router_id_str, neighbor_ip_str);
-//             return;
-//         }
-//         prev = current;
-//         current = current->next;
-//     }
+    while (iface) {
+        struct pwospf_neighbor* current = iface->neighbors;
+        struct pwospf_neighbor* prev = NULL;
 
-//     // Neighbor not found, add a new one
-//     struct pwospf_neighbor* new_neighbor = (struct pwospf_neighbor*)malloc(sizeof(struct pwospf_neighbor));
-//     new_neighbor->router_id = router_id;
-//     new_neighbor->neighbor_ip = neighbor_ip;
-//     new_neighbor->last_hello_received = time(NULL);
-//     new_neighbor->next = NULL;
+        char router_id_str[INET_ADDRSTRLEN];  // Buffer for Router ID string
+        char neighbor_ip_str[INET_ADDRSTRLEN]; // Buffer for Neighbor IP string
 
-//     if (prev) {
-//         prev->next = new_neighbor;
-//     } else {
-//         iface->neighbors = new_neighbor;
-//     }
+        while (current) {
+            // Check if the neighbor has timed out
+            if (difftime(now, current->last_hello_received) > NEIGHBOR_TIMEOUT) {
+                // Convert Router ID and Neighbor IP to strings
+                if (!inet_ntop(AF_INET, &current->router_id, router_id_str, INET_ADDRSTRLEN)) {
+                    perror("Failed to convert Router ID to string");
+                    return;
+                }
+                if (!inet_ntop(AF_INET, &current->neighbor_ip, neighbor_ip_str, INET_ADDRSTRLEN)) {
+                    perror("Failed to convert Neighbor IP to string");
+                    return;
+                }
 
-//     printf("Added new neighbor: Router ID: %s, IP: %s\n",
-//            router_id_str, neighbor_ip_str);
-// }
+                // Log the removal of the neighbor
+                printf("Removing timed-out neighbor: Router ID: %s, IP: %s\n", router_id_str, neighbor_ip_str);
 
-// void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface) {
-//     assert(iface);
+                // Remove the neighbor from the list
+                if (prev) {
+                    prev->next = current->next;
+                } else {
+                    iface->neighbors = current->next;
+                }
 
-//     struct pwospf_neighbor* current = iface->neighbors;
-//     struct pwospf_neighbor* prev = NULL;
+                // Free the memory for the removed neighbor
+                struct pwospf_neighbor* to_free = current;
+                current = current->next;
+                free(to_free);
 
-//     time_t now = time(NULL);
+                // Initiate link state update flood
+                printf("Initiating Link State Update due to neighbor removal.\n");
+                // pwospf_trigger_lsu(sr); // Uncomment when LSU implementation is ready
+            } else {
+                // Move to the next neighbor
+                prev = current;
+                current = current->next;
+            }
+        }
 
-//     char router_id_str[INET_ADDRSTRLEN];  // Buffer for Router ID string
-//     char neighbor_ip_str[INET_ADDRSTRLEN]; // Buffer for Neighbor IP string
+        iface = iface->next;
+    }
+}
 
-//     while (current) {
-//         if (difftime(now, current->last_hello_received) > NEIGHBOR_TIMEOUT) {
-//             // Convert Router ID and Neighbor IP to strings
-//             inet_ntop(AF_INET, &current->router_id, router_id_str, INET_ADDRSTRLEN);
-//             inet_ntop(AF_INET, &current->neighbor_ip, neighbor_ip_str, INET_ADDRSTRLEN);
-
-//             printf("Removing timed-out neighbor: Router ID: %s, IP: %s\n", router_id_str, neighbor_ip_str);
-
-//             // Remove the neighbor from the list
-//             if (prev) {
-//                 prev->next = current->next;
-//             } else {
-//                 iface->neighbors = current->next;
-//             }
-
-//             struct pwospf_neighbor* to_free = current;
-//             current = current->next;
-//             free(to_free);
-//         } else {
-//             prev = current;
-//             current = current->next;
-//         }
-//     }
-// }
-
-void pwospf_send_lsu(struct sr_instance* sr) {
+void pwospf_send_lsu(struct sr_instance* sr, const char* exclude_iface) {
     struct pwospf_subsys* subsys = sr->ospf_subsys;
     assert(subsys);
 
     struct pwospf_interface* iface = subsys->interfaces;
     while (iface) {
-        // Build LSU packet
-        uint32_t num_links = 3; // Number of links (including the stub link)
+        // Skip the excluded interface
+        if (exclude_iface && strcmp(iface->name, exclude_iface) == 0) {
+            iface = iface->next;
+            continue;
+        }
+
+        // Determine the number of links to advertise
+        uint32_t num_links = 0;
+        struct pwospf_neighbor* neighbor_iter = iface->neighbors; // Use unique name for iteration
+        while (neighbor_iter) {
+            num_links++;
+            neighbor_iter = neighbor_iter->next;
+        }
+
+        size_t lsu_hdr_len = sizeof(struct ospfv2_lsu_hdr);
+        size_t adv_len = num_links * sizeof(struct pwospf_lsu); // Correct size usage
+        size_t ospf_payload_len = sizeof(struct ospfv2_hdr) + lsu_hdr_len + adv_len;
         size_t packet_len = sizeof(struct sr_ethernet_hdr) +
                             sizeof(struct ip) +
-                            sizeof(struct ospfv2_hdr) +
-                            sizeof(struct pwospf_lsu) +
-                            num_links * sizeof(struct pwospf_lsu_link);
+                            ospf_payload_len;
+
+        // Add padding if payload length isn't a multiple of 2 bytes
+        if (ospf_payload_len % 2 != 0) {
+            ospf_payload_len++;
+            packet_len++;
+        }
+
         uint8_t* packet = (uint8_t*)malloc(packet_len);
         memset(packet, 0, packet_len);
 
-        // Construct Ethernet header
+        // Ethernet header
         struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*)packet;
         memset(eth_hdr->ether_dhost, 0xFF, ETHER_ADDR_LEN); // Broadcast
         struct sr_if* sr_iface = sr_get_interface(sr, iface->name);
         memcpy(eth_hdr->ether_shost, sr_iface->addr, ETHER_ADDR_LEN);
         eth_hdr->ether_type = htons(ETHERTYPE_IP);
 
-        // Construct IP header
+        // IP header
         struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
         ip_hdr->ip_v = 4;
         ip_hdr->ip_hl = 5;
@@ -475,41 +524,68 @@ void pwospf_send_lsu(struct sr_instance* sr) {
         ip_hdr->ip_ttl = 64;
         ip_hdr->ip_p = 89; // OSPF Protocol
         ip_hdr->ip_src.s_addr = iface->ip;
-        ip_hdr->ip_dst.s_addr = inet_addr("224.0.0.5"); // AllSPFRouters
-        ip_hdr->ip_sum = checksum(ip_hdr, ip_hdr->ip_hl * 4);
 
-        // Construct OSPF header
+        // OSPF header
         struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip));
         ospf_hdr->version = PWOSPF_VERSION;
         ospf_hdr->type = PWOSPF_TYPE_LSU;
-        ospf_hdr->len = htons(sizeof(struct ospfv2_hdr) + sizeof(struct pwospf_lsu) + num_links * sizeof(struct pwospf_lsu_link));
+        ospf_hdr->len = htons(ospf_payload_len);
         ospf_hdr->rid = subsys->router_id;
         ospf_hdr->aid = subsys->area_id;
         ospf_hdr->autype = 0;
         ospf_hdr->audata = 0;
 
-        // Set checksum to 0 for calculation
-        ospf_hdr->csum = 0;
+        // LSU header
+        struct ospfv2_lsu_hdr* lsu_hdr = (struct ospfv2_lsu_hdr*)((uint8_t*)ospf_hdr + sizeof(struct ospfv2_hdr));
+        lsu_hdr->seq = htons(subsys->seq++);
+        lsu_hdr->ttl = 64; // Default TTL for LSUs
+        lsu_hdr->num_adv = htonl(num_links);
 
-        // Use an aligned buffer for checksum calculation
-        uint8_t aligned_hdr[sizeof(struct ospfv2_hdr)];
-        memcpy(aligned_hdr, ospf_hdr, sizeof(struct ospfv2_hdr));
-        ospf_hdr->csum = checksum_pwospf((uint16_t*)aligned_hdr, sizeof(struct ospfv2_hdr) / 2);
+        // Add link advertisements
+        struct ospfv2_lsu* adv = (struct ospfv2_lsu*)((uint8_t*)lsu_hdr + sizeof(struct ospfv2_lsu_hdr));
+        neighbor_iter = iface->neighbors; // Reuse iterator for neighbors
+        while (neighbor_iter) {
+            adv->subnet = neighbor_iter->neighbor_ip;
+            adv->mask = iface->mask;
+            adv->rid = neighbor_iter->router_id;
+            adv++;
+            neighbor_iter = neighbor_iter->next;
+        }
 
-        // Construct LSU header
-        struct pwospf_lsu* lsu = (struct pwospf_lsu*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip) + sizeof(struct ospfv2_hdr));
-        lsu->seq = htonl(subsys->seq++);
-        lsu->num_links = htonl(num_links);
+        // Send an LSU packet to each neighbor
+        neighbor_iter = iface->neighbors; // Iterate again for sending packets
+        while (neighbor_iter) {
+            // Set the destination IP address to the neighbor's IP
+            ip_hdr->ip_dst.s_addr = neighbor_iter->neighbor_ip;
 
-        // Construct stub link
-        struct pwospf_lsu_link* link = (struct pwospf_lsu_link*)(lsu->links);
-        link->link_id = iface->ip;
-        link->link_data = iface->mask;
-        link->type = 2; // Stub link
-        link->metric = 1; // Cost
+            // OSPF checksum calculation
+            ospf_hdr->csum = 0; // Clear for checksum calculation
 
-        sr_send_packet(sr, packet, packet_len, iface->name);
-        printf("Sent LSU from interface: %s\n", iface->name);
+            size_t ospf_len = ospf_payload_len; // Already includes lsu_hdr and advertisements
+            size_t aligned_len = ospf_len + (ospf_len % 2); // Ensure even length
+            uint8_t* aligned_buf = (uint8_t*)malloc(aligned_len);
+            if (!aligned_buf) {
+                perror("Failed to allocate memory for checksum buffer");
+                free(packet);
+                return;
+            }
+
+            memcpy(aligned_buf, ospf_hdr, ospf_len);
+            if (ospf_len % 2 != 0) {
+                aligned_buf[ospf_len] = 0; // Add padding
+            }
+
+            ospf_hdr->csum = checksum_pwospf((uint16_t*)aligned_buf, aligned_len / 2);
+            free(aligned_buf);
+
+            // Send the packet
+            sr_send_packet(sr, packet, packet_len, iface->name);
+            printf("Sent LSU from interface: %s to neighbor IP: %s with %d advertisements\n",
+                   iface->name, inet_ntoa(*(struct in_addr*)&neighbor_iter->neighbor_ip), num_links);
+
+            neighbor_iter = neighbor_iter->next;
+        }
+
         free(packet);
         iface = iface->next;
     }

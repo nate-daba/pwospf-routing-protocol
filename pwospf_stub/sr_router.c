@@ -97,7 +97,7 @@ void sr_handlepacket(
     the router needs to carry out the following steps: */
     if (ethtype == htons(ETHERTYPE_IP)) 
     {
-        printf("IP packet\n"); 
+        // printf("IP packet\n"); 
         struct ip *ip_hdr = (struct ip *)(packet + sizeof(struct sr_ethernet_hdr));
 
         /* 1. If the destination IP is one of the router’s */
@@ -145,11 +145,17 @@ void sr_handlepacket(
                 {
                     printf("ICMP echo reply\n");
                 }
+                
                 else 
                 {
                     printf("Non-echo ICMP packet. Discarding packet ... \n");
                     return;
                 }
+            }
+            /* check if packet is pwospf packet */
+            else if (ip_hdr->ip_p == 89) { // OSPF Protocol
+                // printf("PWOSPF packet\n");
+                pwospf_handle_packet(sr, packet, len, interface);
             }
             /* b. Otherwise discard the packet, i.e., return from the function without further
             processing. */
@@ -161,7 +167,7 @@ void sr_handlepacket(
         }
         /* check if packet is pwospf packet */
         else if (ip_hdr->ip_p == 89) { // OSPF Protocol
-            printf("PWOSPF packet\n");
+            // printf("PWOSPF packet\n");
             pwospf_handle_packet(sr, packet, len, interface);
         }
         /* IP packet is not for me. Forward it using routing table. */
@@ -301,8 +307,11 @@ void pwospf_handle_packet(struct sr_instance* sr, uint8_t* packet, unsigned int 
     struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
     struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + (ip_hdr->ip_hl * 4));
 
+    // Calculate OSPF payload length
+    unsigned int ospf_len = len - sizeof(struct sr_ethernet_hdr) - (ip_hdr->ip_hl * 4);
+
     // Validate the PWOSPF packet
-    if (!validate_pwospf_packet(sr, ospf_hdr)) {
+    if (!validate_pwospf_packet(sr, ospf_hdr, ospf_len)) {
         return; // Invalid packet, exit the function
     }
 
