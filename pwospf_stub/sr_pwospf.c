@@ -131,7 +131,7 @@ static void* pwospf_run_thread(void* arg) {
 
         // Check for timed-out neighbors
         printf("Checking neighbors for timeouts.\n");
-        pwospf_check_on_neighbors(sr);
+        pwospf_check_on_neighbors(sr, &last_lsu_time);
 
         // Check if it's time to send a periodic LSU
         time_t now = time(NULL);
@@ -143,13 +143,12 @@ static void* pwospf_run_thread(void* arg) {
 
         pwospf_unlock(sr->ospf_subsys);
 
-        printf("PWOSPF subsystem sleeping for %d seconds.\n", HELLO_INTERVAL);
-        sleep(HELLO_INTERVAL); // Sleep for HELLO_INTERVAL seconds
-        printf("PWOSPF subsystem awake.\n");
+        // Sleep for HELLO_INTERVAL seconds
+        sleep(HELLO_INTERVAL);
     }
 
     return NULL;
-} /* -- run_ospf_thread -- */
+}
 
 void pwospf_print_subsys(struct pwospf_subsys* subsys) {
     assert(subsys);
@@ -415,8 +414,9 @@ void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interfac
     printf("No matching PWOSPF interface for HELLO packet received on %s\n", interface);
 }
 
-void pwospf_check_on_neighbors(struct sr_instance* sr) {
+void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time) {
     assert(sr);
+    assert(last_lsu_time);
 
     struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
     time_t now = time(NULL);
@@ -459,7 +459,6 @@ void pwospf_check_on_neighbors(struct sr_instance* sr) {
 
                 // Mark topology as changed
                 topology_changed = 1;
-               
             } else {
                 // Move to the next neighbor
                 prev = current;
@@ -469,10 +468,14 @@ void pwospf_check_on_neighbors(struct sr_instance* sr) {
 
         iface = iface->next;
     }
+
     // Trigger an LSU flood if the topology has changed
     if (topology_changed) {
         printf("Initiating Link State Update due to topology change.\n");
         pwospf_send_lsu(sr, NULL);
+
+        // Reset the lsuint counter
+        *last_lsu_time = now;
     }
 }
 

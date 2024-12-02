@@ -116,7 +116,7 @@ int pwospf_init(struct sr_instance* sr);
 void pwospf_print_subsys(struct pwospf_subsys* subsys);
 void send_pwospf_hello(struct sr_instance* sr);
 void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interface);
-void pwospf_check_on_neighbors(struct sr_instance* sr);
+void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time);
 int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, unsigned int ospf_len) ;
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
