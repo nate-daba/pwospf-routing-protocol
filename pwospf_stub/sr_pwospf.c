@@ -420,6 +420,7 @@ void pwospf_check_on_neighbors(struct sr_instance* sr) {
 
     struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
     time_t now = time(NULL);
+    int topology_changed = 0;
 
     while (iface) {
         struct pwospf_neighbor* current = iface->neighbors;
@@ -456,9 +457,9 @@ void pwospf_check_on_neighbors(struct sr_instance* sr) {
                 current = current->next;
                 free(to_free);
 
-                // Initiate link state update flood
-                printf("Initiating Link State Update due to neighbor removal.\n");
-                pwospf_send_lsu(sr, NULL);
+                // Mark topology as changed
+                topology_changed = 1;
+               
             } else {
                 // Move to the next neighbor
                 prev = current;
@@ -467,6 +468,11 @@ void pwospf_check_on_neighbors(struct sr_instance* sr) {
         }
 
         iface = iface->next;
+    }
+    // Trigger an LSU flood if the topology has changed
+    if (topology_changed) {
+        printf("Initiating Link State Update due to topology change.\n");
+        pwospf_send_lsu(sr, NULL);
     }
 }
 
