@@ -322,9 +322,9 @@ void pwospf_handle_packet(struct sr_instance* sr, uint8_t* packet, unsigned int 
     }
     // Handle LSU packets
     else if (ospf_hdr->type == PWOSPF_TYPE_LSU) {
-        printf("Received PWOSPF LSU packet.\n");
+        printf("Received PWOSPF LSU packet through interface: %s\n", interface);
         // Process LSU packets
-        // pwospf_handle_lsu(sr, ospf_hdr, packet, len, interface);
+        pwospf_handle_lsu(sr, packet, len, interface);
     }
     // Handle other PWOSPF packet types
     else {
