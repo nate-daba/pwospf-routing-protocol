@@ -48,6 +48,7 @@ int pwospf_init(struct sr_instance* sr) {
     subsys->topology = NULL; // Initialize topology
     subsys->seq = 0; // Sequence number for LSUs
     subsys->lsu_interval = LSUINT; // Default LSU interval (30s)
+    subsys->is_gw = false; // Default to non-gateway
 
     // Populate the PWOSPF interface list
     struct sr_if* iface = sr->if_list;
@@ -416,10 +417,24 @@ void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time) {
 
         // Check if the neighbor exists and has timed out
         if (neighbor->router_id != 0 && difftime(now, neighbor->last_hello_received) > NEIGHBOR_TIMEOUT) {
-            printf("Removing timed-out neighbor: Router ID: %u, IP: %s\n",
-                   neighbor->router_id, inet_ntoa(*(struct in_addr*)&neighbor->neighbor_ip));
+            // Convert Router ID to a human-readable IP address using inet_ntop
+            char router_id_str[INET_ADDRSTRLEN]; // Buffer for Router ID string
+            char neighbor_ip_str[INET_ADDRSTRLEN]; // Buffer for Neighbor IP string
 
-            // Invalidate the neighbor by setting the router ID to 0
+            if (!inet_ntop(AF_INET, &neighbor->router_id, router_id_str, INET_ADDRSTRLEN)) {
+                perror("Failed to convert Router ID to string");
+                return;
+            }
+
+            if (!inet_ntop(AF_INET, &neighbor->neighbor_ip, neighbor_ip_str, INET_ADDRSTRLEN)) {
+                perror("Failed to convert Neighbor IP to string");
+                return;
+            }
+
+            printf("Removing timed-out neighbor: Router ID: %s, IP: %s\n",
+                   router_id_str, neighbor_ip_str);
+
+            // Invalidate the neighbor by resetting only the router ID
             neighbor->router_id = 0;
 
             // Mark topology as changed
@@ -460,8 +475,8 @@ void pwospf_send_lsu(struct sr_instance* sr, const char* exclude_iface) {
             continue;
         }
 
-        // Prepare LSU advertisements by collecting link information from all interfaces
-        size_t max_adv = 3; // Assume a maximum of 3 advertisements for simplicity
+       // Prepare LSU advertisements by collecting link information from all interfaces
+        size_t max_adv = 4; // Adjust to account for the possible default route
         struct ospfv2_lsu* adv_array = (struct ospfv2_lsu*)malloc(max_adv * sizeof(struct ospfv2_lsu));
         if (!adv_array) {
             perror("Failed to allocate memory for LSU advertisements");
@@ -487,6 +502,15 @@ void pwospf_send_lsu(struct sr_instance* sr, const char* exclude_iface) {
                 adv_count++;
             }
             inner_iface = inner_iface->next;
+        }
+
+        // Add default route to advertisements if the router is a gateway
+        if (subsys->is_gw && adv_count < max_adv) {
+            struct ospfv2_lsu* adv = &adv_array[adv_count++];
+            adv->subnet = htonl(0x00000000); // Default subnet
+            adv->mask = htonl(0x00000000);   // Default mask
+            adv->rid = htonl(0x00000000);    // No PWOSPF neighbor on this link
+            printf("Added default route to LSU advertisements.\n");
         }
 
         // Adjust payload length based on the number of advertisements
@@ -662,18 +686,32 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
                 char subnet_str[INET_ADDRSTRLEN];
                 char mask_str[INET_ADDRSTRLEN];
                 char rid_str[INET_ADDRSTRLEN];
-                printf("Link %d: Subnet: %s, Mask: %s, Advertised Neighbor Router ID: %s\n", i,
+                printf("Link %d: Subnet: %s, Mask: %s, Neighbor ID: %s\n", i,
                     inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN),
                     inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN),
                     inet_ntop(AF_INET, &rid, rid_str, INET_ADDRSTRLEN));
             }
-            // Update only if the sequence number or topology has changed
-            if (router_entry->interfaces && current_links == num_links) {
-                printf("Discarded LSU packet: no topology changes detected.\n");
+            printf("Current links: %d, num_links: %d\n", current_links, num_links);
+
+            int topology_changed = 0;
+            struct pwospf_interface* current_iface = router_entry->interfaces;
+
+            // Compare each interface with the received LSU advertisements
+            for (uint32_t i = 0; i < num_links; i++) {
+                if (!current_iface || current_iface->ip != lsu_adv[i].subnet || current_iface->mask != lsu_adv[i].mask || current_iface->neighbor.router_id != lsu_adv[i].rid) {
+                    topology_changed = 1;
+                    break;
+                }
+                current_iface = current_iface->next;
+            }
+
+            // If the topology hasn't changed, discard the packet
+            if (!topology_changed && current_links == num_links) {
+                printf("Discarded LSU packet: no topology changes detected. However, sequence number is updated!\n");
                 router_entry->last_sequence = seq; // Update sequence number
                 return;
             }
-
+            printf("Topology has changed!! Updating the database.\n");
             printf("Updating topology database for Router ID: %s\n", inet_ntoa(*(struct in_addr*)&ospf_hdr->rid));
             router_entry->last_sequence = seq;
 
@@ -738,6 +776,30 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
 
     // Step 5: Forward LSU to other neighbors (flooding)
     printf("Flooding LSU to other neighbors except interface: %s\n", interface);
+
+    // Decrement TTL before forwarding
+    lsu_hdr->ttl--;
+
+    if (lsu_hdr->ttl <= 0) {
+        printf("LSU packet TTL expired. Dropping packet.\n");
+        return; // Drop the packet if TTL is zero or less
+    }
+
+    // Recalculate OSPF checksum
+    ospf_hdr->csum = 0; // Clear the checksum field before recalculation
+
+    size_t ospf_payload_len = len - sizeof(struct sr_ethernet_hdr) - sizeof(struct ip);
+    uint16_t* ospf_payload = malloc(ospf_payload_len);
+    if (!ospf_payload) {
+        perror("Failed to allocate memory for aligned buffer");
+        return;
+    }
+    memcpy(ospf_payload, ospf_hdr, ospf_payload_len);
+
+    ospf_hdr->csum = checksum_pwospf(ospf_payload, ospf_payload_len / 2);
+    free(ospf_payload);
+
+    // Flood to all neighbors except the incoming interface
     pwospf_send_lsu(sr, interface);
 }
 
@@ -756,48 +818,41 @@ uint16_t checksum_pwospf(uint16_t* buf, size_t count) {
 }
 
 void read_static_routes(struct sr_instance* sr, struct pwospf_subsys* subsys) {
-    // Ensure the routing table exists
     if (!sr->routing_table) {
         printf("Routing table is empty.\n");
         return;
     }
 
     printf("Reading static routes from the routing table:\n");
-
     struct sr_rt* rt_walker = sr->routing_table;
 
-    // Traverse the routing table
     while (rt_walker) {
-        // Extract the relevant fields from the current routing entry
         struct in_addr dest = rt_walker->dest;
         struct in_addr gw = rt_walker->gw;
         struct in_addr mask = rt_walker->mask;
         const char* iface = rt_walker->interface;
 
-        // Print the route for debugging
         printf("Static route found:\n");
         printf("  Destination: %s\n", inet_ntoa(dest));
         printf("  Gateway: %s\n", inet_ntoa(gw));
         printf("  Mask: %s\n", inet_ntoa(mask));
         printf("  Interface: %s\n", iface);
 
-        // Check if it's a default route (0.0.0.0/0)
         if (dest.s_addr == 0) {
-            // Find the corresponding PWOSPF interface
             struct pwospf_interface* pwospf_iface = subsys->interfaces;
             while (pwospf_iface) {
                 if (strcmp(pwospf_iface->name, iface) == 0) {
-                    // Store the default route information
-                    pwospf_iface->neighbor.router_id = 0; // No router ID for default route
+                    pwospf_iface->neighbor.router_id = 0;
                     pwospf_iface->neighbor.neighbor_ip = gw.s_addr;
-                    printf("Default route applied to PWOSPF interface: %s\n", iface);
+
+                    subsys->is_gw = true; // Mark as gateway
+                    printf("This router is a gateway router.\n");
                     break;
                 }
                 pwospf_iface = pwospf_iface->next;
             }
         }
 
-        // Move to the next entry in the routing table
         rt_walker = rt_walker->next;
     }
 }

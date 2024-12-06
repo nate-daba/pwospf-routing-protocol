@@ -12,6 +12,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
 
 #include "sr_if.h"
@@ -65,17 +66,16 @@ struct pwospf_interface {
 
 struct pwospf_subsys
 {
-    /* -- pwospf subsystem state variables here -- */
-    uint32_t router_id;     // ID of the router, typically the IP of the first interface
-    uint32_t area_id;       // Single OSPF area for this project (set to 0)
-    uint16_t lsu_interval;  // Time interval between LSUs
-    uint32_t seq;         // Sequence number for LSU packets
-    struct pwospf_interface *interfaces; // Linked list of router interfaces
+    uint32_t router_id;      // ID of the router, typically the IP of the first interface
+    uint32_t area_id;        // Single OSPF area for this project (set to 0)
+    uint16_t lsu_interval;   // Time interval between LSUs
+    uint32_t seq;            // Sequence number for LSU packets
+    struct pwospf_interface* interfaces; // Linked list of router interfaces
     struct pwospf_router* topology;      // Topology database (linked list)
-    
-    /* -- thread and single lock for pwospf subsystem -- */
-    pthread_t thread;       // HELLO thread
-    pthread_mutex_t lock;   // Mutex lock for thread synchronization
+    bool is_gw;              // Is this router a gateway router?
+
+    pthread_t thread;        // HELLO thread
+    pthread_mutex_t lock;    // Mutex lock for thread synchronization
 };
 
 
