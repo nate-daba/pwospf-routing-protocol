@@ -6,3 +6,4 @@ pwospf_stub/sr
 *.html
 ../.gitignore
 pwospf_stub/.nfs*
+.vscode/
