@@ -419,8 +419,8 @@ void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time) {
             printf("Removing timed-out neighbor: Router ID: %u, IP: %s\n",
                    neighbor->router_id, inet_ntoa(*(struct in_addr*)&neighbor->neighbor_ip));
 
-            // Invalidate the neighbor
-            memset(neighbor, 0, sizeof(struct pwospf_neighbor));
+            // Invalidate the neighbor by setting the router ID to 0
+            neighbor->router_id = 0;
 
             // Mark topology as changed
             topology_changed = 1;
