@@ -667,31 +667,7 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
             // print detailed information in lsu_adv
             uint32_t router_id = ospf_hdr->rid;
             uint32_t neighbor_ip = ip_hdr->ip_src.s_addr;
-            char router_id_str[INET_ADDRSTRLEN];
-            char neighbor_ip_str[INET_ADDRSTRLEN];
-            // Safely convert to string using inet_ntop
-            if (!inet_ntop(AF_INET, &router_id, router_id_str, INET_ADDRSTRLEN)) {
-                perror("Failed to convert Router ID to string");
-                return;
-            }
-            if (!inet_ntop(AF_INET, &neighbor_ip, neighbor_ip_str, INET_ADDRSTRLEN)) {
-                perror("Failed to convert Neighbor IP to string");
-                return;
-            }
-            printf("LSU from Router ID: %s, Neighbor IP: %s\n", router_id_str, neighbor_ip_str);
-            for (uint32_t i = 0; i < num_links; i++) {                
-                uint32_t subnet = lsu_adv[i].subnet;
-                uint32_t mask = lsu_adv[i].mask;
-                uint32_t rid = lsu_adv[i].rid;
-                char subnet_str[INET_ADDRSTRLEN];
-                char mask_str[INET_ADDRSTRLEN];
-                char rid_str[INET_ADDRSTRLEN];
-                printf("Link %d: Subnet: %s, Mask: %s, Neighbor ID: %s\n", i,
-                    inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN),
-                    inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN),
-                    inet_ntop(AF_INET, &rid, rid_str, INET_ADDRSTRLEN));
-            }
-            printf("Current links: %d, num_links: %d\n", current_links, num_links);
+            print_lsu_debug_info(router_id, neighbor_ip, num_links, lsu_adv);
 
             int topology_changed = 0;
             struct pwospf_interface* current_iface = router_entry->interfaces;
@@ -733,15 +709,18 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
                 memset(new_iface, 0, sizeof(struct pwospf_interface));
                 new_iface->ip = lsu_adv[i].subnet;
                 new_iface->mask = lsu_adv[i].mask;
+                new_iface->neighbor.router_id = lsu_adv[i].rid;
                 new_iface->next = router_entry->interfaces;
                 router_entry->interfaces = new_iface;
             }
+            printf("Topology database updated successfully.\n");
+            print_topology(subsys);
             return; // Exit after updating the existing router entry
         }
         router_entry = router_entry->next;
     }
 
-    // Step 3: Add new router to the topology
+    // Step 3: Add new router to the topology database
     printf("Creating new topology entry for Router ID: %s\n", inet_ntoa(*(struct in_addr*)&ospf_hdr->rid));
     struct pwospf_router* new_router = malloc(sizeof(struct pwospf_router));
     if (!new_router) {
@@ -764,12 +743,16 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
         memset(new_iface, 0, sizeof(struct pwospf_interface));
         new_iface->ip = lsu_adv[i].subnet;
         new_iface->mask = lsu_adv[i].mask;
+        new_iface->neighbor.router_id = lsu_adv[i].rid;
         new_iface->next = new_router->interfaces;
         new_router->interfaces = new_iface;
     }
 
     new_router->next = subsys->topology;
     subsys->topology = new_router;
+
+    printf("New topology entry created successfully.\n");
+    print_topology(subsys);
 
     // Step 4: Recalculate forwarding table
     // pwospf_recalculate_routing_table(sr);
@@ -854,5 +837,77 @@ void read_static_routes(struct sr_instance* sr, struct pwospf_subsys* subsys) {
         }
 
         rt_walker = rt_walker->next;
+    }
+}
+void print_topology(struct pwospf_subsys* subsys) {
+    struct pwospf_router* router = subsys->topology;
+    printf("=================================================================================\n");
+    printf("Current Topology:\n");
+    printf("=================================================================================\n");
+
+    char router_id_str[INET_ADDRSTRLEN];
+    char subnet_str[INET_ADDRSTRLEN];
+    char mask_str[INET_ADDRSTRLEN];
+    char neighbor_id_str[INET_ADDRSTRLEN];
+
+    while (router) {
+        if (!inet_ntop(AF_INET, &router->router_id, router_id_str, INET_ADDRSTRLEN)) {
+            perror("Failed to convert Router ID to string");
+            router = router->next;
+            continue;
+        }
+        printf("Router ID: %s\n", router_id_str);
+
+        struct pwospf_interface* iface = router->interfaces;
+        while (iface) {
+            if (!inet_ntop(AF_INET, &iface->ip, subnet_str, INET_ADDRSTRLEN)) {
+                perror("Failed to convert Subnet to string");
+                iface = iface->next;
+                continue;
+            }
+            if (!inet_ntop(AF_INET, &iface->mask, mask_str, INET_ADDRSTRLEN)) {
+                perror("Failed to convert Mask to string");
+                iface = iface->next;
+                continue;
+            }
+            if (!inet_ntop(AF_INET, &iface->neighbor.router_id, neighbor_id_str, INET_ADDRSTRLEN)) {
+                perror("Failed to convert Neighbor Router ID to string");
+                iface = iface->next;
+                continue;
+            }
+            printf("  Subnet: %s, Mask: %s, Neighbor ID: %s\n",
+                   subnet_str, mask_str, neighbor_id_str);
+            iface = iface->next;
+        }
+        router = router->next;
+    }
+    printf("=================================================================================\n");
+}
+
+void print_lsu_debug_info(uint32_t router_id, uint32_t neighbor_ip, uint32_t num_links, struct ospfv2_lsu* lsu_adv) {
+    char router_id_str[INET_ADDRSTRLEN];
+    char neighbor_ip_str[INET_ADDRSTRLEN];
+
+    if (!inet_ntop(AF_INET, &router_id, router_id_str, INET_ADDRSTRLEN)) {
+        perror("Failed to convert Router ID to string");
+        return;
+    }
+    if (!inet_ntop(AF_INET, &neighbor_ip, neighbor_ip_str, INET_ADDRSTRLEN)) {
+        perror("Failed to convert Neighbor IP to string");
+        return;
+    }
+
+    printf("LSU from Router ID: %s, Neighbor IP: %s\n", router_id_str, neighbor_ip_str);
+    for (uint32_t i = 0; i < num_links; i++) {
+        uint32_t subnet = lsu_adv[i].subnet;
+        uint32_t mask = lsu_adv[i].mask;
+        uint32_t rid = lsu_adv[i].rid;
+        char subnet_str[INET_ADDRSTRLEN];
+        char mask_str[INET_ADDRSTRLEN];
+        char rid_str[INET_ADDRSTRLEN];
+        printf("Link %d: Subnet: %s, Mask: %s, Neighbor ID: %s\n", i,
+               inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN),
+               inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN),
+               inet_ntop(AF_INET, &rid, rid_str, INET_ADDRSTRLEN));
     }
 }

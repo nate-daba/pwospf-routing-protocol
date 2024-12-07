@@ -28,6 +28,7 @@ struct sr_instance;
 #define HELLO_INTERVAL 5
 #define NEIGHBOR_TIMEOUT (3 * HELLO_INTERVAL)
 #define LSUINT 30
+#define LSU_TIMEOUT (3 * LSUINT)
 
 /* -----------------------------------------------------------------
  * PWOSPF Data Structures
@@ -43,6 +44,7 @@ struct pwospf_router {
     uint16_t last_sequence;   // Last received sequence number from LSUs.
     struct pwospf_interface *interfaces; // List of interfaces on this router.
     struct pwospf_router *next;   // Pointer to the next router in the topology (linked list).
+    time_t last_updated; // Timestamp for the last LSU received
 };
 
 // --- Neighbor ---
@@ -89,6 +91,12 @@ void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time);
 int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, unsigned int ospf_len);
 void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface);
 void read_static_routes(struct sr_instance* sr, struct pwospf_subsys* subsys);
+int validate_link(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t subnet, uint32_t mask, uint32_t neighbor_id);
+void update_topology_database(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t seq, struct ospfv2_lsu* lsu_adv, uint32_t num_links);
+void cleanup_topology_database(struct pwospf_subsys* subsys);
+void print_lsu_debug_info(uint32_t router_id, uint32_t neighbor_ip, uint32_t num_links, struct ospfv2_lsu* lsu_adv);
+void print_topology(struct pwospf_subsys* subsys);
+void print_router_interfaces(struct pwospf_router* router);
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
