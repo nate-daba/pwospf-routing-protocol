@@ -50,11 +50,13 @@ struct pwospf_router {
 // --- Neighbor ---
 /* pwospf neighbor structure */
 struct pwospf_neighbor {
-    uint32_t router_id;
-    uint32_t neighbor_ip;
-    time_t last_hello_received;
+    uint32_t router_id;           // Router ID of the neighbor
+    uint32_t neighbor_ip;         // IP address of the neighbor
+    uint32_t next_hop;            // IP address of the next hop
+    time_t last_hello_received;   // Timestamp for the last HELLO message received
     struct pwospf_neighbor *next; // Linked list for neighbors
 };
+
 // --- Interface ---
 // Represents a network interface on a router.
 struct pwospf_interface {
@@ -63,6 +65,7 @@ struct pwospf_interface {
     uint32_t mask;                 // Subnet mask.
     uint16_t helloint;             // HELLO interval (default: 10 seconds).
     struct pwospf_neighbor neighbor; // Single neighbor attached to this interface.
+    uint32_t next_hop;             // New field: IP address of the next hop.
     struct pwospf_interface* next; // Pointer to the next interface in the list.
 };
 
@@ -97,6 +100,7 @@ void cleanup_topology_database(struct pwospf_subsys* subsys);
 void print_lsu_debug_info(uint32_t router_id, uint32_t neighbor_ip, uint32_t num_links, struct ospfv2_lsu* lsu_adv);
 void print_topology(struct pwospf_subsys* subsys);
 void print_router_interfaces(struct pwospf_router* router);
+void update_next_hop(struct pwospf_router* router, uint32_t received_from_ip, uint32_t sender_router_id);
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);

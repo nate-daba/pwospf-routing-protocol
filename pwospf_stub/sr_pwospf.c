@@ -145,6 +145,10 @@ static void* pwospf_run_thread(void* arg) {
             last_lsu_time = now; // Reset the LSU timer
         }
 
+        // Clean up stale routers in the topology database
+        printf("Cleaning up stale routers from topology database.\n");
+        cleanup_topology_database(sr->ospf_subsys);
+
         pwospf_unlock(sr->ospf_subsys);
 
         // Sleep for HELLO_INTERVAL seconds
@@ -393,7 +397,7 @@ void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interfac
                        router_id_str, neighbor_ip_str);
                 // Flood LSU
                 printf("Initiating Link State Update due to new neighbor.\n");
-                pwospf_send_lsu(sr, interface);
+                pwospf_send_lsu(sr, NULL);
             }
             return;
         }
@@ -685,12 +689,13 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
             if (!topology_changed && current_links == num_links) {
                 printf("Discarded LSU packet: no topology changes detected. However, sequence number is updated!\n");
                 router_entry->last_sequence = seq; // Update sequence number
+                router_entry->last_updated = time(NULL); // Update last updated time
                 return;
             }
             printf("Topology has changed!! Updating the database.\n");
             printf("Updating topology database for Router ID: %s\n", inet_ntoa(*(struct in_addr*)&ospf_hdr->rid));
             router_entry->last_sequence = seq;
-
+            router_entry->last_updated = time(NULL); // Update last updated time
             // Free old neighbor list and rebuild it
             struct pwospf_interface* old_iface = router_entry->interfaces;
             while (old_iface) {
@@ -714,6 +719,7 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
                 router_entry->interfaces = new_iface;
             }
             printf("Topology database updated successfully.\n");
+            update_next_hop(router_entry, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
             print_topology(subsys);
             return; // Exit after updating the existing router entry
         }
@@ -731,19 +737,23 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
     new_router->router_id = ospf_hdr->rid;
     new_router->area_id = subsys->area_id; // Assuming the same area for all routers
     new_router->last_sequence = seq;
+    new_router->last_updated = time(NULL);
     new_router->interfaces = NULL;
 
     for (uint32_t i = 0; i < num_links; i++) {
         struct pwospf_interface* new_iface = malloc(sizeof(struct pwospf_interface));
         if (!new_iface) {
             perror("Failed to allocate memory for interface");
-            free(new_router);
+            free(new_router); // Avoid memory leaks
             return;
         }
-        memset(new_iface, 0, sizeof(struct pwospf_interface));
+        memset(new_iface, 0, sizeof(struct pwospf_interface)); // Initialize all fields to 0
+
         new_iface->ip = lsu_adv[i].subnet;
         new_iface->mask = lsu_adv[i].mask;
         new_iface->neighbor.router_id = lsu_adv[i].rid;
+        new_iface->neighbor.next_hop = 0; // Explicitly set next_hop to 0 (default)
+
         new_iface->next = new_router->interfaces;
         new_router->interfaces = new_iface;
     }
@@ -752,6 +762,7 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
     subsys->topology = new_router;
 
     printf("New topology entry created successfully.\n");
+    update_next_hop(new_router, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
     print_topology(subsys);
 
     // Step 4: Recalculate forwarding table
@@ -839,6 +850,7 @@ void read_static_routes(struct sr_instance* sr, struct pwospf_subsys* subsys) {
         rt_walker = rt_walker->next;
     }
 }
+
 void print_topology(struct pwospf_subsys* subsys) {
     struct pwospf_router* router = subsys->topology;
     printf("=================================================================================\n");
@@ -849,6 +861,10 @@ void print_topology(struct pwospf_subsys* subsys) {
     char subnet_str[INET_ADDRSTRLEN];
     char mask_str[INET_ADDRSTRLEN];
     char neighbor_id_str[INET_ADDRSTRLEN];
+    char next_hop_str[INET_ADDRSTRLEN];
+
+    const int table_width = 66; // Total table width (without borders)
+    const int border_width = 4; // The table's vertical line border padding (`+---+`)
 
     while (router) {
         if (!inet_ntop(AF_INET, &router->router_id, router_id_str, INET_ADDRSTRLEN)) {
@@ -856,7 +872,22 @@ void print_topology(struct pwospf_subsys* subsys) {
             router = router->next;
             continue;
         }
-        printf("Router ID: %s\n", router_id_str);
+
+        // Build the Router ID header
+        char header[128];
+        snprintf(header, sizeof(header), " Router ID: %s ", router_id_str);
+        int header_len = strlen(header);
+
+        // Calculate the padding needed to center the header
+        int total_width = table_width + border_width * 4; // Account for full table width
+        int padding = (total_width - header_len) / 2;
+
+        printf("%.*s%s%.*s\n", padding, "************************************************",
+               header, padding, "************************************************");
+
+        printf("+------------------+------------------+------------------+------------------+\n");
+        printf("|      Subnet      |       Mask       |   Neighbor ID    |     Next Hop     |\n");
+        printf("+------------------+------------------+------------------+------------------+\n");
 
         struct pwospf_interface* iface = router->interfaces;
         while (iface) {
@@ -875,10 +906,17 @@ void print_topology(struct pwospf_subsys* subsys) {
                 iface = iface->next;
                 continue;
             }
-            printf("  Subnet: %s, Mask: %s, Neighbor ID: %s\n",
-                   subnet_str, mask_str, neighbor_id_str);
+            if (!inet_ntop(AF_INET, &iface->neighbor.next_hop, next_hop_str, INET_ADDRSTRLEN)) {
+                perror("Failed to convert Next Hop to string");
+                iface = iface->next;
+                continue;
+            }
+
+            printf("| %-16s | %-16s | %-16s | %-16s |\n",
+                   subnet_str, mask_str, neighbor_id_str, next_hop_str);
             iface = iface->next;
         }
+        printf("+------------------+------------------+------------------+------------------+\n\n");
         router = router->next;
     }
     printf("=================================================================================\n");
@@ -909,5 +947,113 @@ void print_lsu_debug_info(uint32_t router_id, uint32_t neighbor_ip, uint32_t num
                inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN),
                inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN),
                inet_ntop(AF_INET, &rid, rid_str, INET_ADDRSTRLEN));
+    }
+}
+
+void cleanup_topology_database(struct pwospf_subsys* subsys) {
+    time_t now = time(NULL);
+    struct pwospf_router** current = &subsys->topology;
+    int topology_changed = 0;
+    while (*current) {
+        struct pwospf_router* router = *current;
+        if (difftime(now, router->last_updated) > LSU_TIMEOUT) {
+            printf("Removing stale router entry: Router ID: %s\n",
+                   inet_ntoa(*(struct in_addr*)&router->router_id));
+            
+            // Remove the router from the list
+            *current = router->next;
+            topology_changed = 1;
+            // Free the associated interfaces
+            struct pwospf_interface* iface = router->interfaces;
+            while (iface) {
+                struct pwospf_interface* next_iface = iface->next;
+                free(iface);
+                iface = next_iface;
+            }
+
+            // Free the router entry
+            free(router);
+        } else {
+            current = &router->next; // Move to the next router
+        }
+    }
+    if (topology_changed) {
+        printf("Topology database cleaned up successfully.\n");
+        print_topology(subsys);
+    }
+}
+
+/**
+ * Updates the next_hop field for the given router's interfaces.
+ * This is based on the source of the LSU (neighbor IP).
+ */
+void update_next_hop(struct pwospf_router* router, uint32_t received_from_ip, uint32_t sender_router_id) {
+    if (!router) {
+        printf("update_next_hop: Router is NULL.\n");
+        return;
+    }
+
+    char router_id_str[INET_ADDRSTRLEN];
+    if (!inet_ntop(AF_INET, &router->router_id, router_id_str, INET_ADDRSTRLEN)) {
+        perror("inet_ntop failed for router_id");
+        return;
+    }
+
+    printf("update_next_hop: Updating next_hop for Router ID: %s\n", router_id_str);
+
+    struct pwospf_interface* iface = router->interfaces;
+
+    if (!iface) {
+        printf("update_next_hop: No interfaces for Router ID: %s\n", router_id_str);
+        return;
+    }
+
+    int updated = 0; // Track if any updates are made
+    while (iface) {
+        char iface_ip_str[INET_ADDRSTRLEN];
+        char neighbor_id_str[INET_ADDRSTRLEN];
+        char sender_router_id_str[INET_ADDRSTRLEN];
+
+        if (!inet_ntop(AF_INET, &iface->ip, iface_ip_str, INET_ADDRSTRLEN)) {
+            perror("inet_ntop failed for interface IP");
+            iface = iface->next;
+            continue;
+        }
+        if (!inet_ntop(AF_INET, &iface->neighbor.router_id, neighbor_id_str, INET_ADDRSTRLEN)) {
+            perror("inet_ntop failed for Neighbor ID");
+            iface = iface->next;
+            continue;
+        }
+        if (!inet_ntop(AF_INET, &sender_router_id, sender_router_id_str, INET_ADDRSTRLEN)) {
+            perror("inet_ntop failed for Sender Router ID");
+            iface = iface->next;
+            continue;
+        }
+
+        printf("  Checking Interface: %s, Neighbor ID: %s, Sender Router ID: %s\n",
+               iface_ip_str, neighbor_id_str, sender_router_id_str);
+
+        // If the Neighbor ID matches the sender_router_id, update next_hop
+        if (iface->neighbor.router_id == sender_router_id) {
+            iface->neighbor.next_hop = received_from_ip;
+            updated = 1;
+
+            char next_hop_str[INET_ADDRSTRLEN];
+            if (!inet_ntop(AF_INET, &received_from_ip, next_hop_str, INET_ADDRSTRLEN)) {
+                perror("inet_ntop failed for next_hop");
+            } else {
+                printf("    Match found! Updated Next Hop for Interface IP: %s to: %s\n",
+                       iface_ip_str, next_hop_str);
+            }
+        } else {
+            printf("    No match. Neighbor ID: %s does not match Sender Router ID: %s\n",
+                   neighbor_id_str, sender_router_id_str);
+        }
+
+        iface = iface->next;
+    }
+
+    if (!updated) {
+        printf("update_next_hop: No updates made for Router ID: %s.\n", router_id_str);
     }
 }
