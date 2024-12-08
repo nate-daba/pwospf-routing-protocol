@@ -641,7 +641,7 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
     uint32_t num_links = ntohl(lsu_hdr->num_adv);
     uint32_t seq = lsu_hdr->seq; // Convert from network byte order
 
-    update_topology_graph(ospf_hdr->rid, ip_hdr->ip_src.s_addr, lsu_adv, num_links, seq);
+    update_topology_graph(ospf_hdr->rid, ip_hdr->ip_src.s_addr, lsu_adv, num_links, seq, sr);
 
     printf("Received LSU from Router ID: %s, Seq: %u, Links: %u\n",
        inet_ntoa(*(struct in_addr*)&ospf_hdr->rid), seq, num_links);
@@ -1097,9 +1097,9 @@ struct node* node_exists(uint32_t router_id, uint32_t subnet) {
  * @param advertised_links: Pointer to the array of advertised links.
  * @param num_links: Number of advertised links in the LSU.
  * @param sequence_num: The sequence number of the LSU.
+ * @param sr: Pointer to the router instance.
  */
-void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links,
-                           int num_links, int sequence_num) {
+void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links, int num_links, int sequence_num, struct sr_instance* sr) {
     for (int i = 0; i < 3; i++) {
         struct node* existing_node = node_exists(origin_router, advertised_links[i].subnet);
         if (existing_node == NULL) {
@@ -1173,4 +1173,234 @@ void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct osp
             }
         }
     }
+
+    // recalculate routing table
+    recalculate_routing_table(sr);
 }
+
+/**
+ * @brief Creates and adds a new entry to the routing table.
+ *
+ * This function adds a route to the routing table using the provided destination,
+ * next hop, mask, and interface. It utilizes `sr_add_rt_entry` to perform the actual
+ * addition. Debug information is printed for verification.
+ *
+ * @param sr Pointer to the router instance.
+ * @param dest Destination subnet (network byte order).
+ * @param next_hop Next hop IP address (network byte order).
+ * @param mask Subnet mask (network byte order).
+ * @param iface Name of the interface associated with this route.
+ */
+void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_hop, uint32_t mask, char *iface) {
+    printf("\n[Routing Table] Creating Entry...\n");
+
+    // Buffers for IP address strings
+    char dest_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
+
+    // Convert network byte order to string representation
+    if (!inet_ntop(AF_INET, &dest, dest_str, INET_ADDRSTRLEN)) {
+        perror("inet_ntop failed for destination");
+        return;
+    }
+    if (!inet_ntop(AF_INET, &next_hop, next_hop_str, INET_ADDRSTRLEN)) {
+        perror("inet_ntop failed for next hop");
+        return;
+    }
+    if (!inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN)) {
+        perror("inet_ntop failed for mask");
+        return;
+    }
+
+    // Debug logging
+    printf("  Destination: %s\n", dest_str);
+    printf("  Next Hop: %s\n", next_hop_str);
+    printf("  Mask: %s\n", mask_str);
+    printf("  Interface: %s\n", iface);
+
+    // Create the routing table entry
+    struct in_addr dest_addr = { .s_addr = dest };
+    struct in_addr next_hop_addr = { .s_addr = next_hop };
+    struct in_addr mask_addr = { .s_addr = mask };
+    sr_add_rt_entry(sr, dest_addr, next_hop_addr, mask_addr, iface);
+
+    // Confirm the addition
+    printf("[Routing Table] Entry created successfully.\n");
+}
+
+/**
+ * @brief Checks if a routing table entry exists for a given destination and next hop.
+ *
+ * This function traverses the routing table to find a matching entry for the
+ * specified destination and next hop. If found, it returns a pointer to the
+ * routing table entry; otherwise, it returns `NULL`.
+ *
+ * @param sr Pointer to the router instance.
+ * @param ip_target Destination IP address (network byte order).
+ * @param next_hop Next hop IP address (network byte order).
+ * @return Pointer to the matching routing table entry, or `NULL` if not found.
+ */
+struct sr_rt* lookup_routing_table(struct sr_instance* sr, uint32_t ip_target, uint32_t next_hop) {
+    printf("[Routing Table] Checking for Entry...\n");
+
+    char target_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN];
+
+    // Convert target and next hop to string for debug purposes
+    if (!inet_ntop(AF_INET, &ip_target, target_str, INET_ADDRSTRLEN)) {
+        perror("inet_ntop failed for destination IP");
+        return NULL;
+    }
+    if (!inet_ntop(AF_INET, &next_hop, next_hop_str, INET_ADDRSTRLEN)) {
+        perror("inet_ntop failed for next hop IP");
+        return NULL;
+    }
+
+    printf("  Destination: %s\n", target_str);
+    printf("  Next Hop: %s\n", next_hop_str);
+
+    // Traverse the routing table
+    struct sr_rt* entry = sr->routing_table;
+    while (entry != NULL) {
+        char entry_dest_str[INET_ADDRSTRLEN], entry_next_hop_str[INET_ADDRSTRLEN];
+
+        // Convert existing entry's destination and next hop to string
+        if (!inet_ntop(AF_INET, &entry->dest.s_addr, entry_dest_str, INET_ADDRSTRLEN)) {
+            perror("inet_ntop failed for entry destination");
+            entry = entry->next;
+            continue;
+        }
+        if (!inet_ntop(AF_INET, &entry->gw.s_addr, entry_next_hop_str, INET_ADDRSTRLEN)) {
+            perror("inet_ntop failed for entry next hop");
+            entry = entry->next;
+            continue;
+        }
+
+        // Compare target and next hop with the current entry
+        if (entry->dest.s_addr == ip_target && entry->gw.s_addr == next_hop) {
+            printf("[Routing Table] Match found: Destination=%s, Next Hop=%s\n", entry_dest_str, entry_next_hop_str);
+            return entry;
+        }
+
+        entry = entry->next;
+    }
+
+    printf("[Routing Table] No matching entry found for Destination=%s, Next Hop=%s\n", target_str, next_hop_str);
+    return NULL;
+}
+
+/**
+ * @brief Finds a router interface by its name.
+ *
+ * This function traverses the router's interface list to find an interface
+ * that matches the given name. If found, it returns a pointer to the interface;
+ * otherwise, it returns `NULL`.
+ *
+ * @param sr Pointer to the router instance.
+ * @param interface_name The name of the interface to find.
+ * @return Pointer to the matching interface, or `NULL` if not found.
+ */
+struct pwospf_interface* find_interface_by_name(struct sr_instance* sr, const char* interface_name) {
+    if (!sr || !interface_name) {
+        printf("[Error] Invalid arguments passed to find_interface_by_name.\n");
+        return NULL;
+    }
+    struct pwospf_subsys* subsys = sr->ospf_subsys;
+    assert(subsys);
+
+    struct pwospf_interface* current_if = subsys->interfaces;
+    
+    while (current_if) {
+        // Compare the provided name with the current interface's name
+        if (strcmp(interface_name, current_if->name) == 0) {
+            printf("[Interface Lookup] Found matching interface: %s\n", current_if->name);
+            return current_if;
+        }
+        current_if = current_if->next;
+    }
+
+    printf("[Interface Lookup] No matching interface found for name: %s\n", interface_name);
+    return NULL;
+}
+
+/**
+ * @brief Recalculates the routing table based on the current topology graph.
+ *
+ * This function updates the routing table entries based on the topology graph,
+ * ensuring proper route lookup and prefix matching. It uses modular functions
+ * to handle specific tasks such as creating routing entries and checking
+ * existing ones.
+ *
+ * @param sr Pointer to the router instance.
+ */
+void recalculate_routing_table(struct sr_instance* sr) {
+    if (!sr) {
+        printf("[Error] Null router instance passed to recalculate_routing_table.\n");
+        return;
+    }
+
+    printf("[Routing Table] Recalculating routing table...\n");
+
+    // Iterate through all nodes in the topology graph
+    struct node* current_node = nodes;
+    while (current_node) {
+        // Skip nodes with no valid next hop
+        if (current_node->next_hop == 0) {
+            current_node = current_node->next;
+            continue;
+        }
+
+        // Find the best matching interface for the next hop
+        char* best_iface = NULL;
+        uint32_t max_match = 0;
+        struct sr_if* iface = sr->if_list;
+
+        while (iface) {
+            uint32_t match = iface->ip & current_node->next_hop;
+            if (match > max_match) {
+                max_match = match;
+                best_iface = iface->name;
+            }
+            iface = iface->next;
+        }
+
+        // Add a new routing table entry if it doesn't exist
+        if (best_iface &&
+            !lookup_routing_table(sr, current_node->subnet, current_node->next_hop)) {
+            create_rtable_entry(sr, current_node->subnet, current_node->next_hop,
+                                current_node->mask, best_iface);
+        }
+
+        current_node = current_node->next;
+    }
+
+    // Ensure directly connected interfaces are in the routing table
+    struct sr_if* iface = sr->if_list;
+    while (iface) {
+        if (!lookup_routing_table(sr, iface->ip & iface->mask, 0)) {
+            create_rtable_entry(sr, iface->ip & iface->mask, 0, iface->mask, iface->name);
+        }
+        iface = iface->next;
+    }
+
+    // Add a default route if one doesn't already exist
+    struct sr_rt* rt_entry = sr->routing_table;
+    bool default_route_found = false;
+
+    while (rt_entry) {
+        if (rt_entry->dest.s_addr == 0) {
+            default_route_found = true;
+            break;
+        }
+        rt_entry = rt_entry->next;
+    }
+
+    if (!default_route_found) {
+        struct pwospf_interface* default_iface = find_interface_by_name(sr, "eth0");
+        if (default_iface) {
+            create_rtable_entry(sr, 0, default_iface->neighbor.neighbor_ip, 0, default_iface->name);
+        }
+    }
+
+    printf("[Routing Table] Recalculation complete.\n");
+    sr_print_routing_table(sr);
+}
+

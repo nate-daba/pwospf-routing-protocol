@@ -95,9 +95,6 @@ struct pwospf_subsys
     pthread_mutex_t lock;    // Mutex lock for thread synchronization
 };
 
-
-
-
 int pwospf_init(struct sr_instance* sr);
 void pwospf_print_subsys(struct pwospf_subsys* subsys);
 void send_pwospf_hello(struct sr_instance* sr);
@@ -114,7 +111,11 @@ void print_topology(struct pwospf_subsys* subsys);
 void print_router_interfaces(struct pwospf_router* router);
 void update_next_hop(struct pwospf_router* router, uint32_t received_from_ip, uint32_t sender_router_id);
 struct node* node_exists(uint32_t router_id, uint32_t subnet);
-void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links, int num_links, int sequence_num);
+void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links, int num_links, int sequence_num, struct sr_instance* sr);
+void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_hop, uint32_t mask, char *iface);
+struct sr_rt* lookup_routing_table(struct sr_instance* sr, uint32_t ip_target, uint32_t next_hop);
+struct pwospf_interface* find_interface_by_name(struct sr_instance* sr, const char* interface_name);
+void recalculate_routing_table(struct sr_instance* sr);
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
