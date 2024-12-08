@@ -57,6 +57,18 @@ struct pwospf_neighbor {
     struct pwospf_neighbor *next; // Linked list for neighbors
 };
 
+// --- Node ---
+// Represents a graph node for storing network topology details.
+struct node {
+    uint32_t subnet;         // Subnet address of the link
+    uint32_t router_id;      // ID of the router advertising this subnet
+    uint32_t neighbor_id;    // ID of the neighboring router
+    uint32_t mask;           // Subnet mask
+    uint32_t next_hop;       // Next hop IP address
+    int seq;            // Sequence number for the advertisement
+    struct node* next;  // Pointer to the next node in the list
+};
+
 // --- Interface ---
 // Represents a network interface on a router.
 struct pwospf_interface {
@@ -101,6 +113,8 @@ void print_lsu_debug_info(uint32_t router_id, uint32_t neighbor_ip, uint32_t num
 void print_topology(struct pwospf_subsys* subsys);
 void print_router_interfaces(struct pwospf_router* router);
 void update_next_hop(struct pwospf_router* router, uint32_t received_from_ip, uint32_t sender_router_id);
+struct node* node_exists(uint32_t router_id, uint32_t subnet);
+void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links, int num_links, int sequence_num);
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);

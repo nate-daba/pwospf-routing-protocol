@@ -24,6 +24,8 @@
 
 /* -- declaration of main thread function for pwospf subsystem --- */
 static void* pwospf_run_thread(void* arg);
+
+struct node *nodes = NULL;
 /*---------------------------------------------------------------------
  * Method: pwospf_init(..)
  *
@@ -637,8 +639,10 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
     struct ospfv2_lsu* lsu_adv = (struct ospfv2_lsu*)((uint8_t*)lsu_hdr + sizeof(struct ospfv2_lsu_hdr));
 
     uint32_t num_links = ntohl(lsu_hdr->num_adv);
-
     uint32_t seq = lsu_hdr->seq; // Convert from network byte order
+
+    update_topology_graph(ospf_hdr->rid, ip_hdr->ip_src.s_addr, lsu_adv, num_links, seq);
+
     printf("Received LSU from Router ID: %s, Seq: %u, Links: %u\n",
        inet_ntoa(*(struct in_addr*)&ospf_hdr->rid), seq, num_links);
 
@@ -669,9 +673,9 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
             // print interfaces of the router, current_links, and num_links
             printf("Current links: %d, num_links: %d\n", current_links, num_links);
             // print detailed information in lsu_adv
-            uint32_t router_id = ospf_hdr->rid;
-            uint32_t neighbor_ip = ip_hdr->ip_src.s_addr;
-            print_lsu_debug_info(router_id, neighbor_ip, num_links, lsu_adv);
+            // uint32_t router_id = ospf_hdr->rid;
+            // uint32_t neighbor_ip = ip_hdr->ip_src.s_addr;
+            // print_lsu_debug_info(router_id, neighbor_ip, num_links, lsu_adv);
 
             int topology_changed = 0;
             struct pwospf_interface* current_iface = router_entry->interfaces;
@@ -719,7 +723,7 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
                 router_entry->interfaces = new_iface;
             }
             printf("Topology database updated successfully.\n");
-            update_next_hop(router_entry, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
+            // update_next_hop(router_entry, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
             print_topology(subsys);
             return; // Exit after updating the existing router entry
         }
@@ -762,7 +766,7 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
     subsys->topology = new_router;
 
     printf("New topology entry created successfully.\n");
-    update_next_hop(new_router, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
+    // update_next_hop(new_router, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
     print_topology(subsys);
 
     // Step 4: Recalculate forwarding table
@@ -1055,5 +1059,118 @@ void update_next_hop(struct pwospf_router* router, uint32_t received_from_ip, ui
 
     if (!updated) {
         printf("update_next_hop: No updates made for Router ID: %s.\n", router_id_str);
+    }
+}
+
+/**
+ * Function: node_exists
+ * ----------------------
+ * Checks if a node with the given router ID and subnet exists in the global topology graph.
+ * 
+ * @param router_id: The router ID to search for.
+ * @param subnet: The subnet to search for.
+ * @return: Pointer to the node if it exists, NULL otherwise.
+ */
+struct node* node_exists(uint32_t router_id, uint32_t subnet) {
+    struct node* current = nodes; // Start at the global node list (graph head)
+
+    // Traverse the list to find a matching node
+    while (current) {
+        if (current->router_id == router_id && current->subnet == subnet) {
+            // Match found
+            return current;
+        }
+        current = current->next; // Move to the next node
+    }
+
+    // No match found
+    return NULL;
+}
+
+/**
+ * Function: update_topology_graph
+ * --------------------------------
+ * Updates the topology graph by processing the advertised links in an LSU packet.
+ *
+ * @param origin_router: The Router ID of the LSU sender.
+ * @param src_addr: The source IP address of the LSU sender.
+ * @param advertised_links: Pointer to the array of advertised links.
+ * @param num_links: Number of advertised links in the LSU.
+ * @param sequence_num: The sequence number of the LSU.
+ */
+void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links,
+                           int num_links, int sequence_num) {
+    for (int i = 0; i < 3; i++) {
+        struct node* existing_node = node_exists(origin_router, advertised_links[i].subnet);
+        if (existing_node == NULL) {
+            // Create a new graph node if it doesn't exist
+            struct node* new_node = malloc(sizeof(struct node));
+            if (!new_node) {
+                perror("Failed to allocate memory for a new graph node.");
+                return;
+            }
+            memset(new_node, 0, sizeof(struct node));
+
+            // Populate the new node with LSU details
+            new_node->subnet = advertised_links[i].subnet;
+            new_node->neighbor_id = advertised_links[i].rid;
+            new_node->mask = advertised_links[i].mask;
+            new_node->router_id = origin_router;
+            new_node->seq = sequence_num;
+            new_node->next_hop = src_addr;
+            new_node->next = NULL;
+
+            // Add the new node to the global topology graph
+            if (nodes == NULL) {
+                nodes = new_node;
+            } else {
+                struct node* current_node = nodes;
+                while (current_node->next) {
+                    current_node = current_node->next;
+                }
+                current_node->next = new_node;
+            }
+
+            // Debug: Log the addition of a new node
+            char subnet_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], neighbor_id_str[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &new_node->subnet, subnet_str, INET_ADDRSTRLEN) &&
+                inet_ntop(AF_INET, &new_node->mask, mask_str, INET_ADDRSTRLEN) &&
+                inet_ntop(AF_INET, &new_node->neighbor_id, neighbor_id_str, INET_ADDRSTRLEN) &&
+                inet_ntop(AF_INET, &new_node->next_hop, next_hop_str, INET_ADDRSTRLEN)) {
+                printf("[Topology Update] Added new node: Subnet=%s, Mask=%s, Neighbor ID=%s, Next Hop=%s\n",
+                       subnet_str, mask_str, neighbor_id_str, next_hop_str);
+            } else {
+                perror("inet_ntop failed during debug logging");
+            }
+
+        } else if (existing_node->seq < sequence_num) {
+            // Update the existing node's properties if the sequence number is newer
+            existing_node->mask = advertised_links[i].mask;
+            existing_node->neighbor_id = advertised_links[i].rid;
+            existing_node->next_hop = src_addr;
+            existing_node->seq = sequence_num;
+
+            // Debug: Log the update of an existing node
+            char subnet_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], neighbor_id_str[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &existing_node->subnet, subnet_str, INET_ADDRSTRLEN) &&
+                inet_ntop(AF_INET, &existing_node->mask, mask_str, INET_ADDRSTRLEN) &&
+                inet_ntop(AF_INET, &existing_node->neighbor_id, neighbor_id_str, INET_ADDRSTRLEN) &&
+                inet_ntop(AF_INET, &existing_node->next_hop, next_hop_str, INET_ADDRSTRLEN)) {
+                printf("[Topology Update] Updated node: Subnet=%s, Mask=%s, Neighbor ID=%s, Next Hop=%s\n",
+                       subnet_str, mask_str, neighbor_id_str, next_hop_str);
+            } else {
+                perror("inet_ntop failed during debug logging");
+            }
+
+        } else {
+            // Debug: No update was performed
+            char subnet_str[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &advertised_links[i].subnet, subnet_str, INET_ADDRSTRLEN)) {
+                printf("[Topology Update] No update required for Subnet=%s (Sequence=%d, Existing Sequence=%d)\n",
+                       subnet_str, sequence_num, existing_node ? existing_node->seq : -1);
+            } else {
+                perror("inet_ntop failed during debug logging");
+            }
+        }
     }
 }
