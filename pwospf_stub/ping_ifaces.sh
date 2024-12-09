@@ -19,8 +19,21 @@ while IFS='=' read -r key value; do
     # Extract the IP address
     IP=$(echo "$value" | xargs) # Trim whitespace
 
-    # Ping the IP 15 times
-    echo "Pinging $IP..."
+    # Extract the descriptive information from the key
+    if [[ "$key" =~ ip_(.+)_eth([0-9]+) ]]; then
+        HOST=${BASH_REMATCH[1]} # e.g., vhost1
+        INTERFACE=eth${BASH_REMATCH[2]} # e.g., eth0
+    else
+        HOST="unknown host"
+        INTERFACE="unknown interface"
+    fi
+
+    # Display the descriptive message
+    echo "====================================================="
+    echo "Pinging interface $INTERFACE of $HOST at $IP..."
+    echo "====================================================="
+
+    # Ping the IP 10 times
     ping -c 10 "$IP"
 
     # Check if the ping was successful
@@ -30,7 +43,7 @@ while IFS='=' read -r key value; do
         echo "Ping to $IP failed."
     fi
 
-    echo "-----------------------------"
+    echo "-----------------------------------------------------"
 done < "$IPLIST_FILE"
 
 echo "Ping operations completed."
