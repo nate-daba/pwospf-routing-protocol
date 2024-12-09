@@ -2,7 +2,7 @@ vnltopo113.pvtkey
 *.o
 *.d
 pwospf_stub/sr
-*.bin
+*.bin*
 *.html
 ../.gitignore
 pwospf_stub/.nfs*

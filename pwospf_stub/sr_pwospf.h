@@ -116,6 +116,8 @@ void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_ho
 struct sr_rt* lookup_routing_table(struct sr_instance* sr, uint32_t ip_target, uint32_t next_hop);
 struct pwospf_interface* find_interface_by_name(struct sr_instance* sr, const char* interface_name);
 void recalculate_routing_table(struct sr_instance* sr);
+bool route_already_implied(struct sr_instance* sr, uint32_t subnet, uint32_t mask);
+int mask_to_prefix_length(uint32_t mask);
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);

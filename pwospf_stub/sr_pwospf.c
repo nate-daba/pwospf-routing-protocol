@@ -1072,19 +1072,21 @@ void update_next_hop(struct pwospf_router* router, uint32_t received_from_ip, ui
  * @return: Pointer to the node if it exists, NULL otherwise.
  */
 struct node* node_exists(uint32_t router_id, uint32_t subnet) {
-    struct node* current = nodes; // Start at the global node list (graph head)
+    // Start at the global node list (graph head)
+    struct node* current = nodes;
 
     // Traverse the list to find a matching node
     while (current) {
+        printf("[Node Exists] Checking node: Router ID=%u, Subnet=%u\n", current->router_id, current->subnet);
         if (current->router_id == router_id && current->subnet == subnet) {
-            // Match found
-            return current;
+            printf("[Node Exists] Match found: Router ID=%u, Subnet=%u\n", router_id, subnet);
+            return current; // Match found
         }
-        current = current->next; // Move to the next node
+        current = current->next; // Move to the next node in the list
     }
 
-    // No match found
-    return NULL;
+    printf("[Node Exists] No match found for Router ID=%u, Subnet=%u\n", router_id, subnet);
+    return NULL; // No match found
 }
 
 /**
@@ -1100,7 +1102,7 @@ struct node* node_exists(uint32_t router_id, uint32_t subnet) {
  * @param sr: Pointer to the router instance.
  */
 void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links, int num_links, int sequence_num, struct sr_instance* sr) {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < num_links; i++) {
         struct node* existing_node = node_exists(origin_router, advertised_links[i].subnet);
         if (existing_node == NULL) {
             // Create a new graph node if it doesn't exist
@@ -1143,7 +1145,8 @@ void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct osp
                 perror("inet_ntop failed during debug logging");
             }
 
-        } else if (existing_node->seq < sequence_num) {
+        } 
+        else if (existing_node->seq < sequence_num) {
             // Update the existing node's properties if the sequence number is newer
             existing_node->mask = advertised_links[i].mask;
             existing_node->neighbor_id = advertised_links[i].rid;
@@ -1162,7 +1165,8 @@ void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct osp
                 perror("inet_ntop failed during debug logging");
             }
 
-        } else {
+        } 
+        else {
             // Debug: No update was performed
             char subnet_str[INET_ADDRSTRLEN];
             if (inet_ntop(AF_INET, &advertised_links[i].subnet, subnet_str, INET_ADDRSTRLEN)) {
@@ -1197,25 +1201,23 @@ void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_ho
     // Buffers for IP address strings
     char dest_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
 
-    // Convert network byte order to string representation
+    // Convert addresses to strings
     if (!inet_ntop(AF_INET, &dest, dest_str, INET_ADDRSTRLEN)) {
         perror("inet_ntop failed for destination");
-        return;
+        strncpy(dest_str, "INVALID", INET_ADDRSTRLEN);
     }
     if (!inet_ntop(AF_INET, &next_hop, next_hop_str, INET_ADDRSTRLEN)) {
         perror("inet_ntop failed for next hop");
-        return;
+        strncpy(next_hop_str, "INVALID", INET_ADDRSTRLEN);
     }
     if (!inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN)) {
         perror("inet_ntop failed for mask");
-        return;
+        strncpy(mask_str, "INVALID", INET_ADDRSTRLEN);
     }
 
     // Debug logging
-    printf("  Destination: %s\n", dest_str);
-    printf("  Next Hop: %s\n", next_hop_str);
-    printf("  Mask: %s\n", mask_str);
-    printf("  Interface: %s\n", iface);
+    printf("[Routing Table] Adding Route: Destination=%s, Next Hop=%s, Mask=%s, Interface=%s\n",
+           dest_str, next_hop_str, mask_str, iface);
 
     // Create the routing table entry
     struct in_addr dest_addr = { .s_addr = dest };
@@ -1332,26 +1334,35 @@ struct pwospf_interface* find_interface_by_name(struct sr_instance* sr, const ch
  * @param sr Pointer to the router instance.
  */
 void recalculate_routing_table(struct sr_instance* sr) {
-    if (!sr) {
-        printf("[Error] Null router instance passed to recalculate_routing_table.\n");
+    if (!sr || !sr->ospf_subsys || !sr->ospf_subsys->interfaces) {
+        printf("[Error] Invalid router instance or OSPF subsystem.\n");
         return;
     }
 
     printf("[Routing Table] Recalculating routing table...\n");
 
-    // Iterate through all nodes in the topology graph
+    // Step 1: Process nodes from the topology graph
     struct node* current_node = nodes;
     while (current_node) {
-        // Skip nodes with no valid next hop
+        char subnet_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
+
+        inet_ntop(AF_INET, &current_node->subnet, subnet_str, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, &current_node->next_hop, next_hop_str, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, &current_node->mask, mask_str, INET_ADDRSTRLEN);
+
+        printf("[Routing Table] Processing Node: Subnet=%s, Next Hop=%s, Mask=%s\n",
+               subnet_str, next_hop_str, mask_str);
+
+        // Skip nodes with invalid next hops
         if (current_node->next_hop == 0) {
             current_node = current_node->next;
             continue;
         }
 
-        // Find the best matching interface for the next hop
+        // Find the best matching interface
         char* best_iface = NULL;
         uint32_t max_match = 0;
-        struct sr_if* iface = sr->if_list;
+        struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
 
         while (iface) {
             uint32_t match = iface->ip & current_node->next_hop;
@@ -1362,26 +1373,44 @@ void recalculate_routing_table(struct sr_instance* sr) {
             iface = iface->next;
         }
 
-        // Add a new routing table entry if it doesn't exist
-        if (best_iface &&
-            !lookup_routing_table(sr, current_node->subnet, current_node->next_hop)) {
-            create_rtable_entry(sr, current_node->subnet, current_node->next_hop,
-                                current_node->mask, best_iface);
+        // Add route if not already in the table
+        if (best_iface && !lookup_routing_table(sr, current_node->subnet, current_node->next_hop)) {
+            printf("[Routing Table] Adding Route: Destination=%s, Next Hop=%s, Mask=%s, Interface=%s\n",
+                   subnet_str, next_hop_str, mask_str, best_iface);
+
+            create_rtable_entry(sr, current_node->subnet, current_node->next_hop, current_node->mask, best_iface);
         }
 
         current_node = current_node->next;
     }
 
-    // Ensure directly connected interfaces are in the routing table
-    struct sr_if* iface = sr->if_list;
+    // Step 2: Ensure directly connected interfaces are added
+    struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
     while (iface) {
-        if (!lookup_routing_table(sr, iface->ip & iface->mask, 0)) {
-            create_rtable_entry(sr, iface->ip & iface->mask, 0, iface->mask, iface->name);
+        uint32_t subnet = iface->ip & iface->mask;
+
+        char subnet_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN], iface_ip_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, &iface->mask, mask_str, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, &iface->ip, iface_ip_str, INET_ADDRSTRLEN);
+
+        printf("[Routing Table] Checking directly connected interface: %s, interface ip: %s\n", iface->name, iface_ip_str);
+        printf("  Calculated Subnet=%s, Mask=%s\n", subnet_str, mask_str);
+
+        if (!lookup_routing_table(sr, subnet, 0) &&
+            !route_already_implied(sr, subnet, iface->mask)) {
+            printf("[Routing Table] Adding directly connected route: Subnet=%s, Mask=%s, Interface=%s\n",
+                subnet_str, mask_str, iface->name);
+            create_rtable_entry(sr, subnet, 0, iface->mask, iface->name);
+        } else {
+            printf("[Routing Table] Skipping directly connected route for Subnet=%s, Mask=%s (Already exists or implied)\n",
+                subnet_str, mask_str);
         }
+
         iface = iface->next;
     }
 
-    // Add a default route if one doesn't already exist
+    // Step 3: Add a default route if none exists
     struct sr_rt* rt_entry = sr->routing_table;
     bool default_route_found = false;
 
@@ -1394,13 +1423,63 @@ void recalculate_routing_table(struct sr_instance* sr) {
     }
 
     if (!default_route_found) {
-        struct pwospf_interface* default_iface = find_interface_by_name(sr, "eth0");
+        struct pwospf_interface* default_iface = sr->ospf_subsys->interfaces;
         if (default_iface) {
-            create_rtable_entry(sr, 0, default_iface->neighbor.neighbor_ip, 0, default_iface->name);
+            printf("[Routing Table] Adding default route: Interface=%s\n", default_iface->name);
+            create_rtable_entry(sr, 0, 0, 0, default_iface->name);
         }
     }
 
     printf("[Routing Table] Recalculation complete.\n");
     sr_print_routing_table(sr);
+}
+
+bool route_already_implied(struct sr_instance* sr, uint32_t subnet, uint32_t mask) {
+    char subnet_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN);
+    printf("[Route Implied Check] Subnet=%s, Mask=%s, Checking Against Existing Routes...\n",
+           subnet_str, mask_str);
+
+    struct sr_rt* entry = sr->routing_table;
+    while (entry) {
+        char entry_subnet_str[INET_ADDRSTRLEN], entry_mask_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &entry->dest.s_addr, entry_subnet_str, INET_ADDRSTRLEN);
+        inet_ntop(AF_INET, &entry->mask.s_addr, entry_mask_str, INET_ADDRSTRLEN);
+
+        printf("  Comparing Against Route: Subnet=%s, Mask=%s\n", entry_subnet_str, entry_mask_str);
+
+        // Skip default route
+        if (entry->dest.s_addr == 0 && entry->mask.s_addr == 0) {
+            
+            // Check subnet of gate using mask
+            if ((entry->gw.s_addr & mask) == subnet) {
+                printf("  Match found: Default route is implied.\n");
+                return true;
+            }
+            entry = entry->next;
+            continue;
+        }
+
+        // Check if the route is implied by an existing route
+        if ((entry->dest.s_addr & mask) == subnet && entry->mask.s_addr >= mask) {
+            printf("  Match found: Route is implied.\n");
+            return true;
+        }
+
+        entry = entry->next;
+    }
+
+    printf("  No matching implied route found.\n");
+    return false;
+}
+
+int mask_to_prefix_length(uint32_t mask) {
+    int prefix_length = 0;
+    while (mask) {
+        prefix_length += (mask & 1);
+        mask >>= 1;
+    }
+    return prefix_length;
 }
 
