@@ -21,11 +21,15 @@
 #include "sr_router.h"
 #include "sr_if.h"
 #include "sr_rt.h"
+#include "stdbool.h"    
+
 
 /* -- declaration of main thread function for pwospf subsystem --- */
 static void* pwospf_run_thread(void* arg);
 
 struct node *nodes = NULL;
+uint32_t router_id_to_index[MAX_ROUTERS];
+uint32_t router_count = 0;
 /*---------------------------------------------------------------------
  * Method: pwospf_init(..)
  *
@@ -86,6 +90,9 @@ int pwospf_init(struct sr_instance* sr) {
     printf("PWOSPF subsystem initialized with Router ID: %s\n",
            inet_ntoa(*(struct in_addr*)&subsys->router_id));
 
+    // add the current router to the topology
+    add_current_router_to_topology(subsys);
+
     // Add directly connected subnets to the routing table
     add_directly_connected_subnets(sr);
 
@@ -95,7 +102,41 @@ int pwospf_init(struct sr_instance* sr) {
     return 0;
 }
 
+void add_current_router_to_topology(struct pwospf_subsys* subsys) {
+    if (!subsys) return;
 
+    struct pwospf_router* current_router = malloc(sizeof(struct pwospf_router));
+    if (!current_router) {
+        perror("[Error] Failed to allocate memory for current router");
+        return;
+    }
+
+    memset(current_router, 0, sizeof(struct pwospf_router));
+    current_router->router_id = subsys->router_id;
+    current_router->area_id = subsys->area_id;
+    current_router->lsu_interval = subsys->lsu_interval;
+
+    // Populate interfaces
+    struct pwospf_interface* iface = subsys->interfaces;
+    while (iface) {
+        struct pwospf_interface* new_iface = malloc(sizeof(struct pwospf_interface));
+        if (!new_iface) {
+            perror("[Error] Failed to allocate memory for interface");
+            continue;
+        }
+        memcpy(new_iface, iface, sizeof(struct pwospf_interface));
+        new_iface->next = current_router->interfaces;
+        current_router->interfaces = new_iface;
+
+        iface = iface->next;
+    }
+
+    // Add to the topology
+    current_router->next = subsys->topology;
+    subsys->topology = current_router;
+
+    printf("[Topology] Current router added to topology: Router ID: %u\n", current_router->router_id);
+}
 /*---------------------------------------------------------------------
  * Method: pwospf_lock
  *
@@ -154,7 +195,7 @@ static void* pwospf_run_thread(void* arg) {
         }
 
         // Clean up stale routers in the topology database
-        printf("Cleaning up stale routers from topology database.\n");
+        printf("Checking for stale routers from topology database.\n");
         cleanup_topology_database(sr->ospf_subsys);
 
         pwospf_unlock(sr->ospf_subsys);
@@ -407,6 +448,11 @@ void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interfac
                 printf("Initiating Link State Update due to new neighbor.\n");
                 pwospf_send_lsu(sr, NULL);
             }
+            pwospf_iface->next_hop = neighbor_ip;
+            // update current router in the topology with the updated neighbor info
+            // Update the current router in the topology with the updated neighbor info
+            update_self_router_topology(sr->ospf_subsys, pwospf_iface);
+            print_topology(sr->ospf_subsys);
             return;
         }
         pwospf_iface = pwospf_iface->next;
@@ -414,7 +460,64 @@ void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interfac
 
     printf("No matching PWOSPF interface for HELLO packet received on %s\n", interface);
 }
+/**
+ * @brief Updates the current router's entry in the topology with the updated neighbor information.
+ *
+ * @param subsys Pointer to the PWOSPF subsystem.
+ * @param iface Pointer to the PWOSPF interface with updated neighbor information.
+ */
+void update_self_router_topology(struct pwospf_subsys* subsys, struct pwospf_interface* iface) {
+    assert(subsys);
+    assert(iface);
 
+    struct pwospf_router* router = subsys->topology;
+
+    // Find the self-router entry in the topology
+    while (router) {
+        if (router->router_id == subsys->router_id) {
+            struct pwospf_interface* current_iface = router->interfaces;
+
+            // Traverse the interface list to find a match
+            while (current_iface) {
+                if (current_iface->ip == iface->ip && current_iface->mask == iface->mask) {
+                    // Update the neighbor information and next hop
+                    current_iface->neighbor.router_id = iface->neighbor.router_id;
+                    current_iface->neighbor.neighbor_ip = iface->neighbor.neighbor_ip;
+                    current_iface->neighbor.last_hello_received = iface->neighbor.last_hello_received;
+                    current_iface->next_hop = iface->next_hop; // Ensure next hop is correctly updated
+
+                    printf("[Topology Update] Updated self-router's topology for interface %s.\n", iface->name);
+                    return;
+                }
+                current_iface = current_iface->next;
+            }
+
+            // If no match found, add the updated interface to the self-router's topology
+            struct pwospf_interface* new_iface = malloc(sizeof(struct pwospf_interface));
+            if (!new_iface) {
+                perror("Failed to allocate memory for interface update.");
+                return;
+            }
+            // memcpy(new_iface, iface, sizeof(struct pwospf_interface));
+            // new_iface->next_hop = iface->neighbor.neighbor_ip; // Set next hop correctly for the new interface
+            new_iface->ip = iface->ip;
+            new_iface->mask = iface->mask;
+            new_iface->helloint = iface->helloint;
+            new_iface->neighbor.router_id = iface->neighbor.router_id;
+            new_iface->neighbor.neighbor_ip = iface->neighbor.neighbor_ip;
+            new_iface->neighbor.last_hello_received = iface->neighbor.last_hello_received;
+            new_iface->next_hop = iface->neighbor.neighbor_ip; // Set next hop correctly for the new interface
+            new_iface->next = router->interfaces;
+            router->interfaces = new_iface;
+
+            printf("[Topology Update] Added new interface to self-router's topology: %s.\n", iface->name);
+            return;
+        }
+        router = router->next;
+    }
+
+    printf("[Topology Update] Self-router not found in topology. Cannot update interfaces.\n");
+}
 void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time) {
     assert(sr);
     assert(last_lsu_time);
@@ -448,16 +551,21 @@ void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time) {
 
             // Invalidate the neighbor by resetting only the router ID
             neighbor->router_id = 0;
-
+            neighbor->neighbor_ip = 0;
+            iface->next_hop = 0; // Reset next hop
+            
+            update_self_router_topology(sr->ospf_subsys, iface);
             // Mark topology as changed
             topology_changed = 1;
         }
 
         iface = iface->next;
     }
-
+    
     // Trigger an LSU flood if the topology has changed
     if (topology_changed) {
+        printf("Topology has changed.\n");
+        print_topology(sr->ospf_subsys);
         printf("Initiating Link State Update due to topology change.\n");
         pwospf_send_lsu(sr, NULL);
 
@@ -617,185 +725,276 @@ void pwospf_send_lsu(struct sr_instance* sr, const char* exclude_iface) {
         iface = iface->next;
     }
 }
-
-int pwospf_validate_lsu(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t seq) {
-    assert(subsys);
-
-    // Iterate through the topology database
-    struct pwospf_router* entry = subsys->topology;
-    while (entry) {
-        if (entry->router_id == router_id) {
-            // If entry exists, check the sequence number
-            if (seq <= entry->last_sequence) {
-                return 0; // Sequence number is stale or duplicate
-            }
-            return 1; // Sequence number is valid
-        }
-        entry = entry->next;
+/**
+ * @brief Updates the sequence number and last updated timestamp for a router entry.
+ *
+ * This function is called when an LSU packet has no topology changes,
+ * but the sequence number of the packet is higher than the stored one,
+ * requiring the sequence number and timestamp to be updated.
+ *
+ * @param router_entry Pointer to the router entry in the topology database.
+ * @param seq The new sequence number to update.
+ */
+void pwospf_update_router_sequence_number(struct pwospf_router* router_entry, uint32_t seq) {
+    if (!router_entry) {
+        printf("[Error] Null router entry passed to pwospf_update_router_sequence_number.\n");
+        return;
     }
 
-    // If no entry exists for this router, consider it valid
+    // Update the sequence number
+    router_entry->last_sequence = seq;
+
+    // Update the last updated timestamp
+    router_entry->last_updated = time(NULL);
+    char router_id_str[INET_ADDRSTRLEN];
+    if (!inet_ntop(AF_INET, &router_entry->router_id, router_id_str, INET_ADDRSTRLEN)) {
+        perror("Failed to convert Router ID to string");
+        return;
+    }
+    printf("[Router Update] Updated Router ID: %s with Sequence: %u, Timestamp: %ld\n",
+           router_id_str, seq, router_entry->last_updated);
+}
+/**
+ * @brief Validates the LSU packet.
+ *
+ * @param sr Pointer to the router instance.
+ * @param subsys Pointer to the PWOSPF subsystem.
+ * @param ospf_hdr Pointer to the OSPF header.
+ * @param seq Sequence number of the LSU packet.
+ * @param interface Incoming interface for the packet.
+ * @return int 1 if the packet is valid, 0 otherwise.
+ */
+int pwospf_validate_lsu_packet(struct sr_instance* sr, struct pwospf_subsys* subsys,
+                                struct ospfv2_hdr* ospf_hdr, uint32_t seq, char* interface) {
+    if (ospf_hdr->rid == subsys->router_id) {
+        printf("Discarded LSU packet: self-originated.\n");
+        return 0;
+    }
+
+    struct pwospf_router* router_entry = pwospf_find_router_entry(subsys, ospf_hdr->rid);
+    if (router_entry && seq <= router_entry->last_sequence) {
+        printf("Discarded LSU packet: stale or redundant sequence number.\n");
+        return 0;
+    }
+
     return 1;
 }
 
-void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface) {
-    struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
-    struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + (ip_hdr->ip_hl * 4));
-    struct ospfv2_lsu_hdr* lsu_hdr = (struct ospfv2_lsu_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + (ip_hdr->ip_hl * 4) + sizeof(struct ospfv2_hdr));
-    struct ospfv2_lsu* lsu_adv = (struct ospfv2_lsu*)((uint8_t*)lsu_hdr + sizeof(struct ospfv2_lsu_hdr));
+/**
+ * @brief Finds a router entry in the topology database.
+ *
+ * @param subsys Pointer to the PWOSPF subsystem.
+ * @param router_id Router ID to search for.
+ * @return Pointer to the router entry if found, NULL otherwise.
+ */
+struct pwospf_router* pwospf_find_router_entry(struct pwospf_subsys* subsys, uint32_t router_id) {
+    struct pwospf_router* entry = subsys->topology;
+    while (entry) {
+        if (entry->router_id == router_id) {
+            return entry;
+        }
+        entry = entry->next;
+    }
+    return NULL;
+}
 
-    uint32_t num_links = ntohl(lsu_hdr->num_adv);
-    uint32_t seq = lsu_hdr->seq; // Convert from network byte order
-
-    update_topology_graph(ospf_hdr->rid, ip_hdr->ip_src.s_addr, lsu_adv, num_links, seq, sr);
-
-    printf("Received LSU from Router ID: %s, Seq: %u, Links: %u\n",
-       inet_ntoa(*(struct in_addr*)&ospf_hdr->rid), seq, num_links);
-
-    struct pwospf_subsys* subsys = sr->ospf_subsys;
-
-    // Step 1: Discard LSUs generated by this router
-    if (ospf_hdr->rid == subsys->router_id) {
-        printf("Discarded LSU packet: self-originated.\n");
+/**
+ * @brief Updates an existing router's topology in the database.
+ *
+ * @param router_entry Pointer to the router entry.
+ * @param lsu_adv Pointer to the LSU advertisements.
+ * @param num_links Number of links in the LSU.
+ * @param seq Sequence number of the LSU.
+ */
+void pwospf_update_router_topology(struct pwospf_router* router_entry,
+                                   struct ospfv2_lsu* lsu_adv, uint32_t num_links, uint32_t seq) {
+    char router_id_str[INET_ADDRSTRLEN];
+    if (!inet_ntop(AF_INET, &router_entry->router_id, router_id_str, INET_ADDRSTRLEN)) {
+        perror("Failed to convert Router ID to string");
         return;
     }
+    printf("[Topology Update] Updating topology for Router ID: %s\n", router_id_str);
 
-    // Step 2: Check sequence number to determine if the LSU is stale
-    struct pwospf_router* router_entry = subsys->topology;
-    while (router_entry) {
-        if (router_entry->router_id == ospf_hdr->rid) {
-            if (seq <= router_entry->last_sequence) {
-                printf("Discarded LSU packet: stale or redundant sequence number.\n");
-                return;
-            }
-
-            // Count current links in the router's interface list
-            uint32_t current_links = 0;
-            struct pwospf_interface* iface = router_entry->interfaces;
-            while (iface) {
-                current_links++;
-                iface = iface->next;
-            }
-            // print interfaces of the router, current_links, and num_links
-            printf("Current links: %d, num_links: %d\n", current_links, num_links);
-            // print detailed information in lsu_adv
-            // uint32_t router_id = ospf_hdr->rid;
-            // uint32_t neighbor_ip = ip_hdr->ip_src.s_addr;
-            // print_lsu_debug_info(router_id, neighbor_ip, num_links, lsu_adv);
-
-            int topology_changed = 0;
-            struct pwospf_interface* current_iface = router_entry->interfaces;
-
-            // Compare each interface with the received LSU advertisements
-            for (uint32_t i = 0; i < num_links; i++) {
-                if (!current_iface || current_iface->ip != lsu_adv[i].subnet || current_iface->mask != lsu_adv[i].mask || current_iface->neighbor.router_id != lsu_adv[i].rid) {
-                    topology_changed = 1;
-                    break;
-                }
-                current_iface = current_iface->next;
-            }
-
-            // If the topology hasn't changed, discard the packet
-            if (!topology_changed && current_links == num_links) {
-                printf("Discarded LSU packet: no topology changes detected. However, sequence number is updated!\n");
-                router_entry->last_sequence = seq; // Update sequence number
-                router_entry->last_updated = time(NULL); // Update last updated time
-                return;
-            }
-            printf("Topology has changed!! Updating the database.\n");
-            printf("Updating topology database for Router ID: %s\n", inet_ntoa(*(struct in_addr*)&ospf_hdr->rid));
-            router_entry->last_sequence = seq;
-            router_entry->last_updated = time(NULL); // Update last updated time
-            // Free old neighbor list and rebuild it
-            struct pwospf_interface* old_iface = router_entry->interfaces;
-            while (old_iface) {
-                struct pwospf_interface* next_iface = old_iface->next;
-                free(old_iface);
-                old_iface = next_iface;
-            }
-
-            router_entry->interfaces = NULL; // Reset interfaces
-            for (uint32_t i = 0; i < num_links; i++) {
-                struct pwospf_interface* new_iface = malloc(sizeof(struct pwospf_interface));
-                if (!new_iface) {
-                    perror("Failed to allocate memory for interface");
-                    return;
-                }
-                memset(new_iface, 0, sizeof(struct pwospf_interface));
-                new_iface->ip = lsu_adv[i].subnet;
-                new_iface->mask = lsu_adv[i].mask;
-                new_iface->neighbor.router_id = lsu_adv[i].rid;
-                new_iface->next = router_entry->interfaces;
-                router_entry->interfaces = new_iface;
-            }
-            printf("Topology database updated successfully.\n");
-            // update_next_hop(router_entry, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
-            print_topology(subsys);
-            return; // Exit after updating the existing router entry
-        }
-        router_entry = router_entry->next;
+    // Free old interface list
+    struct pwospf_interface* iface = router_entry->interfaces;
+    while (iface) {
+        struct pwospf_interface* next = iface->next;
+        free(iface);
+        iface = next;
     }
 
-    // Step 3: Add new router to the topology database
-    printf("Creating new topology entry for Router ID: %s\n", inet_ntoa(*(struct in_addr*)&ospf_hdr->rid));
+    // Add new interfaces from the LSU
+    router_entry->interfaces = NULL;
+    for (uint32_t i = 0; i < num_links; i++) {
+        struct pwospf_interface* new_iface = malloc(sizeof(struct pwospf_interface));
+        if (!new_iface) {
+            perror("Failed to allocate memory for interface");
+            return;
+        }
+        memset(new_iface, 0, sizeof(struct pwospf_interface));
+
+        // Populate interface fields based on LSU advertisement
+        new_iface->ip = lsu_adv[i].subnet;                     // Subnet
+        new_iface->mask = lsu_adv[i].mask;                     // Subnet mask
+        new_iface->neighbor.router_id = lsu_adv[i].rid;        // Neighbor router ID
+        new_iface->neighbor.neighbor_ip = 0;                   // Cannot determine from LSU
+        new_iface->helloint = 10;                              // Default HELLO interval (assumption)
+
+        // Add the new interface to the linked list
+        new_iface->next = router_entry->interfaces;
+        router_entry->interfaces = new_iface;
+    }
+
+    router_entry->last_sequence = seq;
+    router_entry->last_updated = time(NULL); // Timestamp for when this router's topology was last updated
+}
+/**
+ * @brief Determines if the received LSU indicates a change in the topology.
+ *
+ * @param router_entry Pointer to the existing router entry in the topology.
+ * @param lsu_adv Pointer to the LSU advertisements.
+ * @param num_links Number of links in the LSU advertisement.
+ * @return int 1 if the topology has changed, 0 otherwise.
+ */
+int topology_changed(struct pwospf_router* router_entry, struct ospfv2_lsu* lsu_adv, uint32_t num_links) {
+    struct pwospf_interface* iface = router_entry->interfaces;
+
+    // Track visited links from the LSU to detect removal of existing links
+    int* visited_links = calloc(num_links, sizeof(int));
+    if (!visited_links) {
+        perror("Failed to allocate memory for tracking visited links");
+        return 1; // Assume change to avoid ignoring updates
+    }
+
+    // Step 1: Check for changes in existing links
+    struct pwospf_interface* current_iface = iface;
+    while (current_iface) {
+        int link_found = 0;
+
+        for (uint32_t i = 0; i < num_links; i++) {
+            if ((current_iface->ip == lsu_adv[i].subnet) &&
+                (current_iface->mask == lsu_adv[i].mask)) {
+                
+                link_found = 1; // Match found
+
+                // Check for state changes
+                char subnet_str[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &lsu_adv[i].subnet, subnet_str, INET_ADDRSTRLEN);
+                if (current_iface->neighbor.router_id != lsu_adv[i].rid) {
+                    if (lsu_adv[i].rid == 0) {
+                        printf("[Topology Change] Link down detected for subnet %s\n", subnet_str);
+                    } else if (current_iface->neighbor.router_id == 0) {
+                        printf("[Topology Change] Link up detected for subnet %s\n", subnet_str);
+                    } else { 
+                        printf("[Topology Change] Neighbor ID changed for subnet %s\n", subnet_str);
+                    }
+                    free(visited_links);
+                    return 1;
+                }
+
+                visited_links[i] = 1; // Mark this link as visited
+                break;
+            }
+        }
+
+        if (!link_found) {
+            // Current link in topology is missing in the LSU
+            printf("[Topology Change] Link removed: Subnet=%u\n", current_iface->ip);
+            free(visited_links);
+            return 1;
+        }
+
+        current_iface = current_iface->next;
+    }
+
+    // Step 2: Check for addition of new links
+    for (uint32_t i = 0; i < num_links; i++) {
+        if (!visited_links[i]) {
+            printf("[Topology Change] New link detected: Subnet=%u\n", lsu_adv[i].subnet);
+            free(visited_links);
+            return 1;
+        }
+    }
+
+    free(visited_links);
+
+    // Step 3: No changes detected
+    return 0;
+}
+
+/**
+ * @brief Adds a new router entry to the topology database.
+ *
+ * @param subsys Pointer to the PWOSPF subsystem.
+ * @param router_id Router ID of the new router.
+ * @param lsu_adv Pointer to the LSU advertisements.
+ * @param num_links Number of links in the LSU.
+ * @param seq Sequence number of the LSU.
+ */
+void pwospf_add_new_router_to_topology(struct pwospf_subsys* subsys, uint32_t router_id,
+                                       struct ospfv2_lsu* lsu_adv, uint32_t num_links, uint32_t seq) {
+    printf("[Topology Update] Adding new router to topology: Router ID: %u\n", router_id);
+
     struct pwospf_router* new_router = malloc(sizeof(struct pwospf_router));
     if (!new_router) {
-        perror("Failed to allocate memory for new topology entry");
+        perror("Failed to allocate memory for new router");
         return;
     }
     memset(new_router, 0, sizeof(struct pwospf_router));
-    new_router->router_id = ospf_hdr->rid;
-    new_router->area_id = subsys->area_id; // Assuming the same area for all routers
+
+    new_router->router_id = router_id;
+    new_router->area_id = subsys->area_id;
     new_router->last_sequence = seq;
     new_router->last_updated = time(NULL);
-    new_router->interfaces = NULL;
 
     for (uint32_t i = 0; i < num_links; i++) {
         struct pwospf_interface* new_iface = malloc(sizeof(struct pwospf_interface));
         if (!new_iface) {
             perror("Failed to allocate memory for interface");
-            free(new_router); // Avoid memory leaks
+            free(new_router);
             return;
         }
-        memset(new_iface, 0, sizeof(struct pwospf_interface)); // Initialize all fields to 0
-
+        memset(new_iface, 0, sizeof(struct pwospf_interface));
         new_iface->ip = lsu_adv[i].subnet;
         new_iface->mask = lsu_adv[i].mask;
         new_iface->neighbor.router_id = lsu_adv[i].rid;
-        new_iface->neighbor.next_hop = 0; // Explicitly set next_hop to 0 (default)
-
         new_iface->next = new_router->interfaces;
         new_router->interfaces = new_iface;
     }
 
     new_router->next = subsys->topology;
     subsys->topology = new_router;
+}
+/**
+ * @brief Floods an LSU packet to all neighbors except the specified interface.
+ *
+ * This function decrements the TTL, recalculates the checksum, and sends
+ * the LSU packet to all neighbors except the incoming interface.
+ *
+ * @param sr Pointer to the router instance.
+ * @param packet Pointer to the LSU packet to be flooded.
+ * @param len Length of the LSU packet.
+ * @param interface The interface through which the packet was received (excluded from flooding).
+ */
+void pwospf_flood_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface) {
 
-    printf("New topology entry created successfully.\n");
-    // update_next_hop(new_router, ip_hdr->ip_src.s_addr, ospf_hdr->rid);
-    print_topology(subsys);
-
-    // Step 4: Recalculate forwarding table
-    // pwospf_recalculate_routing_table(sr);
-
-    // Step 5: Forward LSU to other neighbors (flooding)
-    printf("Flooding LSU to other neighbors except interface: %s\n", interface);
-
-    // Decrement TTL before forwarding
+    // Decrement TTL
+    struct ospfv2_lsu_hdr* lsu_hdr = (struct ospfv2_lsu_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip) + sizeof(struct ospfv2_hdr));
     lsu_hdr->ttl--;
 
     if (lsu_hdr->ttl <= 0) {
-        printf("LSU packet TTL expired. Dropping packet.\n");
+        printf("[LSU Flooding] TTL expired. Dropping packet.\n");
         return; // Drop the packet if TTL is zero or less
     }
 
     // Recalculate OSPF checksum
+    struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + sizeof(struct ip));
     ospf_hdr->csum = 0; // Clear the checksum field before recalculation
 
     size_t ospf_payload_len = len - sizeof(struct sr_ethernet_hdr) - sizeof(struct ip);
     uint16_t* ospf_payload = malloc(ospf_payload_len);
     if (!ospf_payload) {
-        perror("Failed to allocate memory for aligned buffer");
+        perror("[LSU Flooding] Failed to allocate memory for checksum calculation.");
         return;
     }
     memcpy(ospf_payload, ospf_hdr, ospf_payload_len);
@@ -804,9 +1003,313 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
     free(ospf_payload);
 
     // Flood to all neighbors except the incoming interface
-    pwospf_send_lsu(sr, interface);
+    struct pwospf_interface* iface = sr->ospf_subsys->interfaces;
+    while (iface) {
+        if (strcmp(iface->name, interface) != 0) {
+            // modify the source mac address
+            struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*)packet;
+            struct sr_if* sr_iface = sr_get_interface(sr, iface->name);
+            memcpy(eth_hdr->ether_shost, sr_iface->addr, ETHER_ADDR_LEN); // Source MAC
+
+            printf("[LSU Flooding] Forwarding LSU packet via interface: %s\n", iface->name);
+            sr_send_packet(sr, packet, len, iface->name);
+        }
+        iface = iface->next;
+    }
+}
+// Maps a router_id to an index, creating a new mapping if necessary.
+int get_router_index(uint32_t router_id) {
+    for (uint32_t i = 0; i < router_count; i++) {
+        if (router_id_to_index[i] == router_id) {
+            return i;
+        }
+    }
+    if (router_count < MAX_ROUTERS) {
+        router_id_to_index[router_count] = router_id;
+        return router_count++;
+    }
+    return -1; // Error: Maximum number of routers exceeded.
+}
+/**
+ * @brief Perform BFS to compute shortest paths to all subnets.
+ *
+ * @param topology Pointer to the topology database.
+ * @param source_router_id The router ID of the current router.
+ * @return A hash map or data structure mapping subnets to next hops and interfaces.
+ */
+// BFS Function
+/**
+ * @brief Perform BFS to compute shortest paths to all subnets.
+ *
+ * @param topology Pointer to the topology database.
+ * @param source_router_id The router ID of the current router.
+ * @return A struct containing the shortest path results.
+ */
+struct shortest_path_result* bfs_shortest_paths(struct pwospf_router* topology, uint32_t source_router_id) {
+    printf("[Debug] Starting BFS shortest path calculation...\n");
+
+    // Allocate memory for the result
+    struct shortest_path_result* result = malloc(sizeof(struct shortest_path_result));
+    if (!result) {
+        perror("[Error] Failed to allocate memory for shortest path result");
+        return NULL;
+    }
+    memset(result, 0, sizeof(struct shortest_path_result));
+
+    // Mapping of router IDs to array indices
+    uint32_t router_id_to_index[MAX_ROUTERS] = {0};
+    uint32_t router_count = 0;
+
+    // Function to get or assign index for a router ID
+    int get_router_index(uint32_t router_id) {
+        for (uint32_t i = 0; i < router_count; i++) {
+            if (router_id_to_index[i] == router_id) {
+                return i;
+            }
+        }
+        if (router_count < MAX_ROUTERS) {
+            router_id_to_index[router_count] = router_id;
+            return router_count++;
+        }
+        return -1; // Error: Maximum number of routers exceeded.
+    }
+
+    // Get the source index
+    int source_index = get_router_index(source_router_id);
+    if (source_index == -1) {
+        printf("[Error] Too many routers. Cannot process source_router_id.\n");
+        free(result);
+        return NULL;
+    }
+
+    // Initialize BFS structures
+    printf("[Debug] Initializing BFS structures...\n");
+    bool visited[MAX_ROUTERS] = {false};
+    uint32_t queue[MAX_ROUTERS];
+    int front = 0, rear = 0;
+
+    // Enqueue the source router
+    queue[rear++] = source_index;
+    visited[source_index] = true;
+
+    printf("[Debug] BFS structures initialized successfully.\n");
+
+    while (front < rear) {
+        int current_index = queue[front++];
+        uint32_t current_router_id = router_id_to_index[current_index];
+        char current_router_id_str[INET_ADDRSTRLEN];
+        if (!inet_ntop(AF_INET, &current_router_id, current_router_id_str, INET_ADDRSTRLEN)) {
+            perror("[Error] Failed to convert Router ID to string");
+            continue;
+        }
+        printf("[Debug] Processing Router ID: %s\n", current_router_id_str);
+
+        // Find the router in the topology
+        struct pwospf_router* current_router = NULL;
+        for (struct pwospf_router* r = topology; r; r = r->next) {
+            if (r->router_id == current_router_id) {
+                current_router = r;
+                break;
+            }
+        }
+
+        if (!current_router) {
+            printf("[Error] Router ID %s not found in topology. Skipping.\n", current_router_id_str);
+            continue;
+        }
+
+        // Process neighbors
+        for (struct pwospf_interface* iface = current_router->interfaces; iface; iface = iface->next) {
+            uint32_t neighbor_id = iface->neighbor.router_id;
+            int neighbor_index = get_router_index(neighbor_id);
+
+            // Skip if already visited or mapping failed
+            if (neighbor_index == -1 || visited[neighbor_index]) {
+                printf("[Debug] Neighbor ID %u already visited or invalid. Skipping.\n", neighbor_id);
+                continue;
+            }
+
+            // Mark the neighbor as visited and enqueue
+            visited[neighbor_index] = true;
+            queue[rear++] = neighbor_index;
+
+            // Add the link to the result
+            struct shortest_path_entry* new_entry = malloc(sizeof(struct shortest_path_entry));
+            if (!new_entry) {
+                perror("[Error] Failed to allocate memory for shortest path entry");
+                continue;
+            }
+
+            new_entry->subnet = iface->ip & iface->mask;
+            new_entry->mask = iface->mask;
+            new_entry->next_hop = iface->neighbor.neighbor_ip;
+            strncpy(new_entry->interface, iface->name, sizeof(new_entry->interface) - 1);
+            new_entry->interface[sizeof(new_entry->interface) - 1] = '\0';
+            new_entry->next = result->entries;
+            result->entries = new_entry;
+
+            printf("[Debug] Added entry: Subnet=%s, Mask=%s, Next Hop=%s, Interface=%s\n",
+                   inet_ntoa(*(struct in_addr*)&new_entry->subnet),
+                   inet_ntoa(*(struct in_addr*)&new_entry->mask),
+                   inet_ntoa(*(struct in_addr*)&new_entry->next_hop),
+                   new_entry->interface);
+        }
+    }
+
+    printf("[Debug] BFS completed successfully.\n");
+    return result;
 }
 
+// Function to free the result structure
+void free_shortest_path_result(struct shortest_path_result* result) {
+    if (!result) {
+        return;
+    }
+
+    struct shortest_path_entry* entry = result->entries;
+    while (entry) {
+        struct shortest_path_entry* next = entry->next;
+        free(entry);
+        entry = next;
+    }
+    free(result);
+}
+/**
+ * @brief Handles incoming LSU packets for the PWOSPF protocol.
+ *
+ * @param sr Pointer to the router instance.
+ * @param packet Pointer to the received packet.
+ * @param len Length of the received packet.
+ * @param interface Incoming interface for the packet.
+ */
+void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface) {
+    struct ip* ip_hdr = (struct ip*)(packet + sizeof(struct sr_ethernet_hdr));
+    struct ospfv2_hdr* ospf_hdr = (struct ospfv2_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + (ip_hdr->ip_hl * 4));
+    struct ospfv2_lsu_hdr* lsu_hdr = (struct ospfv2_lsu_hdr*)(packet + sizeof(struct sr_ethernet_hdr) + (ip_hdr->ip_hl * 4) + sizeof(struct ospfv2_hdr));
+    struct ospfv2_lsu* lsu_adv = (struct ospfv2_lsu*)((uint8_t*)lsu_hdr + sizeof(struct ospfv2_lsu_hdr));
+
+    uint32_t num_links = ntohl(lsu_hdr->num_adv);
+    uint32_t seq = lsu_hdr->seq;
+
+    printf("Received LSU from Router ID: %s, Seq: %u, Links: %u\n",
+           inet_ntoa(*(struct in_addr*)&ospf_hdr->rid), seq, num_links);
+
+    struct pwospf_subsys* subsys = sr->ospf_subsys;
+
+    // Step 1: Validate LSU
+    if (!pwospf_validate_lsu_packet(sr, subsys, ospf_hdr, seq, interface)) {
+        return; // Discard invalid or redundant packets
+    }
+     // print lsu advertisements
+    // print_lsu_debug_info(ospf_hdr->rid, ip_hdr->ip_src.s_addr, num_links, lsu_adv);
+
+    // Step 2: Check for topology changes
+    struct pwospf_router* router_entry = pwospf_find_router_entry(subsys, ospf_hdr->rid);
+    if (router_entry) {
+        if (!topology_changed(router_entry, lsu_adv, num_links)) {
+            printf("[LSU] No topology changes detected. Updating sequence number.\n");
+            pwospf_update_router_sequence_number(router_entry, seq);
+            return;
+        }
+    }
+   
+    // Step 3: Update topology graph
+    if (router_entry) {
+        pwospf_update_router_topology(router_entry, lsu_adv, num_links, seq);
+    } else {
+        pwospf_add_new_router_to_topology(subsys, ospf_hdr->rid, lsu_adv, num_links, seq);
+    }
+
+    // print router topology
+    print_topology(subsys);
+
+    // Step 4: Recalculate routing table
+    recalculate_routing_table(sr);
+
+    // Step 5: Flood LSU to other neighbors
+    printf("[LSU] Flooding LSU to other neighbor except %s.\n", interface);
+    pwospf_flood_lsu(sr, packet, len, interface);
+}
+
+/**
+ * @brief Recalculates the routing table based on the current topology graph.
+ *
+ * This function computes the shortest paths to all subnets in the topology and updates
+ * the routing table with next-hop and interface information.
+ *
+ * @param sr Pointer to the router instance.
+ */
+void recalculate_routing_table(struct sr_instance* sr) {
+    if (!sr || !sr->ospf_subsys) {
+        printf("[Error] Invalid router instance or OSPF subsystem.\n");
+        return;
+    }
+
+    struct pwospf_subsys* subsys = sr->ospf_subsys;
+    struct pwospf_router* topology = subsys->topology;
+    uint32_t source_router_id = subsys->router_id;
+
+    printf("[Routing Table] Recalculating routing table...\n");
+
+    // Step 1: Compute shortest paths using BFS
+    printf("[Debug] Starting BFS for shortest paths...\n");
+    struct shortest_path_result* shortest_paths = bfs_shortest_paths(topology, source_router_id);
+    if (!shortest_paths) {
+        printf("[Error] BFS failed. Cannot update routing table.\n");
+        return;
+    }
+    printf("[Debug] BFS completed successfully.\n");
+
+    // Buffers for IP address strings
+    char subnet_str[INET_ADDRSTRLEN];
+    char mask_str[INET_ADDRSTRLEN];
+    char next_hop_str[INET_ADDRSTRLEN];
+
+    // Step 2: Update the routing table
+    printf("[Debug] Starting routing table updates...\n");
+    struct shortest_path_entry* entry = shortest_paths->entries;
+    while (entry) {
+        printf("[Debug] Processing shortest path entry...\n");
+        if (!entry) {
+            printf("[Error] NULL entry in shortest path results.\n");
+            break;
+        }
+
+        // Convert IP addresses to strings (once per entry)
+        const char* subnet_result = inet_ntop(AF_INET, &entry->subnet, subnet_str, INET_ADDRSTRLEN);
+        const char* mask_result = inet_ntop(AF_INET, &entry->mask, mask_str, INET_ADDRSTRLEN);
+        const char* next_hop_result = inet_ntop(AF_INET, &entry->next_hop, next_hop_str, INET_ADDRSTRLEN);
+
+        if (!subnet_result || !mask_result || !next_hop_result) {
+            perror("[Routing Table] inet_ntop failed for one or more fields");
+            entry = entry->next;
+            continue;
+        }
+
+        // Check if the route already exists
+        printf("[Debug] Checking if route already exists...\n");
+        struct sr_rt* existing_entry = lookup_routing_table(sr, entry->subnet, entry->next_hop);
+        if (existing_entry) {
+            printf("[Routing Table] Route already exists: Subnet=%s, Next Hop=%s. Skipping.\n",
+                   subnet_str, next_hop_str);
+        } else {
+            // Add a new route
+            printf("[Routing Table] Adding new route: Subnet=%s, Mask=%s, Next Hop=%s, Interface=%s\n",
+                   subnet_str, mask_str, next_hop_str, entry->interface);
+
+            create_rtable_entry(sr, entry->subnet, entry->next_hop, entry->mask, entry->interface);
+        }
+
+        entry = entry->next;
+    }
+
+    // Step 3: Free BFS results
+    printf("[Debug] Freeing BFS results...\n");
+    free_shortest_path_result(shortest_paths);
+
+    printf("[Routing Table] Recalculation complete.\n");
+    sr_print_routing_table(sr);
+}
 // PWOSPF-specific checksum calculation
 uint16_t checksum_pwospf(uint16_t* buf, size_t count) {
     uint32_t sum = 0;
@@ -916,7 +1419,7 @@ void print_topology(struct pwospf_subsys* subsys) {
                 iface = iface->next;
                 continue;
             }
-            if (!inet_ntop(AF_INET, &iface->neighbor.next_hop, next_hop_str, INET_ADDRSTRLEN)) {
+            if (!inet_ntop(AF_INET, &iface->next_hop, next_hop_str, INET_ADDRSTRLEN)) {
                 perror("Failed to convert Next Hop to string");
                 iface = iface->next;
                 continue;
@@ -966,7 +1469,7 @@ void cleanup_topology_database(struct pwospf_subsys* subsys) {
     int topology_changed = 0;
     while (*current) {
         struct pwospf_router* router = *current;
-        if (difftime(now, router->last_updated) > LSU_TIMEOUT) {
+        if ((difftime(now, router->last_updated) > LSU_TIMEOUT) && (router->router_id != subsys->router_id)) {
             printf("Removing stale router entry: Router ID: %s\n",
                    inet_ntoa(*(struct in_addr*)&router->router_id));
             
@@ -1339,65 +1842,65 @@ struct pwospf_interface* find_interface_by_name(struct sr_instance* sr, const ch
  *
  * @param sr Pointer to the router instance.
  */
-void recalculate_routing_table(struct sr_instance* sr) {
-    if (!sr || !sr->ospf_subsys || !sr->ospf_subsys->interfaces) {
-        printf("[Error] Invalid router instance or OSPF subsystem.\n");
-        return;
-    }
+// void recalculate_routing_table(struct sr_instance* sr) {
+//     if (!sr || !sr->ospf_subsys || !sr->ospf_subsys->interfaces) {
+//         printf("[Error] Invalid router instance or OSPF subsystem.\n");
+//         return;
+//     }
 
-    printf("[Routing Table] Recalculating routing table...\n");
+//     printf("[Routing Table] Recalculating routing table...\n");
 
-    // Step 1: Process nodes from the topology graph
-    struct node* current_node = nodes;
-    while (current_node) {
-        char subnet_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
+//     // Step 1: Process nodes from the topology graph
+//     struct node* current_node = nodes;
+//     while (current_node) {
+//         char subnet_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
 
-        inet_ntop(AF_INET, &current_node->subnet, subnet_str, INET_ADDRSTRLEN);
-        inet_ntop(AF_INET, &current_node->next_hop, next_hop_str, INET_ADDRSTRLEN);
-        inet_ntop(AF_INET, &current_node->mask, mask_str, INET_ADDRSTRLEN);
+//         inet_ntop(AF_INET, &current_node->subnet, subnet_str, INET_ADDRSTRLEN);
+//         inet_ntop(AF_INET, &current_node->next_hop, next_hop_str, INET_ADDRSTRLEN);
+//         inet_ntop(AF_INET, &current_node->mask, mask_str, INET_ADDRSTRLEN);
 
-        printf("[Routing Table] Processing Node: Subnet=%s, Next Hop=%s, Mask=%s\n",
-               subnet_str, next_hop_str, mask_str);
+//         printf("[Routing Table] Processing Node: Subnet=%s, Next Hop=%s, Mask=%s\n",
+//                subnet_str, next_hop_str, mask_str);
 
-        // Skip nodes with invalid next hops
-        if (current_node->next_hop == 0) {
-            current_node = current_node->next;
-            continue;
-        }
+//         // Skip nodes with invalid next hops
+//         if (current_node->next_hop == 0) {
+//             current_node = current_node->next;
+//             continue;
+//         }
 
-        // Check if the route already exists in the routing table
-        struct sr_rt* existing_entry = lookup_route_by_subnet(sr, current_node->subnet);
-        if (existing_entry) {
-            // If the existing route has no gateway (directly connected), replace it with the advertised route
-            if (existing_entry->gw.s_addr == 0) {
-                printf("[Routing Table] Replacing directly connected route for Subnet=%s with advertised route.\n",
-                       subnet_str);
+//         // Check if the route already exists in the routing table
+//         struct sr_rt* existing_entry = lookup_route_by_subnet(sr, current_node->subnet);
+//         if (existing_entry) {
+//             // If the existing route has no gateway (directly connected), replace it with the advertised route
+//             if (existing_entry->gw.s_addr == 0) {
+//                 printf("[Routing Table] Replacing directly connected route for Subnet=%s with advertised route.\n",
+//                        subnet_str);
 
-                update_rtable_entry(sr, existing_entry, current_node->next_hop, current_node->mask);
-            } else {
-                printf("[Routing Table] Advertised route for Subnet=%s already exists. Skipping.\n",
-                       subnet_str);
-            }
-        } else {
-            // Add the new route
-            char* best_iface = find_best_matching_interface(sr, current_node->next_hop);
-            if (best_iface) {
-                printf("[Routing Table] Adding Route: Destination=%s, Next Hop=%s, Mask=%s, Interface=%s\n",
-                       subnet_str, next_hop_str, mask_str, best_iface);
+//                 update_rtable_entry(sr, existing_entry, current_node->next_hop, current_node->mask);
+//             } else {
+//                 printf("[Routing Table] Advertised route for Subnet=%s already exists. Skipping.\n",
+//                        subnet_str);
+//             }
+//         } else {
+//             // Add the new route
+//             char* best_iface = find_best_matching_interface(sr, current_node->next_hop);
+//             if (best_iface) {
+//                 printf("[Routing Table] Adding Route: Destination=%s, Next Hop=%s, Mask=%s, Interface=%s\n",
+//                        subnet_str, next_hop_str, mask_str, best_iface);
 
-                create_rtable_entry(sr, current_node->subnet, current_node->next_hop, current_node->mask, best_iface);
-            }
-        }
+//                 create_rtable_entry(sr, current_node->subnet, current_node->next_hop, current_node->mask, best_iface);
+//             }
+//         }
 
-        current_node = current_node->next;
-    }
+//         current_node = current_node->next;
+//     }
 
-    // Step 2: Add a default route if none exists
-    // add_default_route_if_missing(sr);
+//     // Step 2: Add a default route if none exists
+//     // add_default_route_if_missing(sr);
 
-    printf("[Routing Table] Recalculation complete.\n");
-    sr_print_routing_table(sr);
-}
+//     printf("[Routing Table] Recalculation complete.\n");
+//     sr_print_routing_table(sr);
+// }
 
 bool route_already_implied(struct sr_instance* sr, uint32_t subnet, uint32_t mask) {
     char subnet_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];

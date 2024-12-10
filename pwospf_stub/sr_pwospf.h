@@ -29,6 +29,8 @@ struct sr_instance;
 #define NEIGHBOR_TIMEOUT (3 * HELLO_INTERVAL)
 #define LSUINT 30
 #define LSU_TIMEOUT (3 * LSUINT)
+#define MAX_ROUTERS 10 // Adjust this based on the maximum routers in your topology
+
 
 /* -----------------------------------------------------------------
  * PWOSPF Data Structures
@@ -57,6 +59,18 @@ struct pwospf_neighbor {
     struct pwospf_neighbor *next; // Linked list for neighbors
 };
 
+// --- Interface ---
+// Represents a network interface on a router.
+struct pwospf_interface {
+    char name[SR_IFACE_NAMELEN];    // Interface name (e.g., "eth0").
+    uint32_t ip;                   // IP address of the interface.
+    uint32_t mask;                 // Subnet mask.
+    uint16_t helloint;             // HELLO interval (default: 10 seconds).
+    struct pwospf_neighbor neighbor; // Single neighbor attached to this interface.
+    uint32_t next_hop;             // New field: IP address of the next hop.
+    struct pwospf_interface* next; // Pointer to the next interface in the list.
+};
+
 // --- Node ---
 // Represents a graph node for storing network topology details.
 struct node {
@@ -69,16 +83,27 @@ struct node {
     struct node* next;  // Pointer to the next node in the list
 };
 
-// --- Interface ---
-// Represents a network interface on a router.
-struct pwospf_interface {
-    char name[SR_IFACE_NAMELEN];    // Interface name (e.g., "eth0").
-    uint32_t ip;                   // IP address of the interface.
-    uint32_t mask;                 // Subnet mask.
-    uint16_t helloint;             // HELLO interval (default: 10 seconds).
-    struct pwospf_neighbor neighbor; // Single neighbor attached to this interface.
-    uint32_t next_hop;             // New field: IP address of the next hop.
-    struct pwospf_interface* next; // Pointer to the next interface in the list.
+/**
+ * @brief Represents a single entry in the shortest path result.
+ *
+ * Each entry contains information about a subnet, its mask, the next hop,
+ * and the outgoing interface.
+ */
+struct shortest_path_entry {
+    uint32_t subnet;             // Destination subnet (IP prefix)
+    uint32_t mask;               // Subnet mask
+    uint32_t next_hop;           // Next hop IP address
+    char interface[SR_IFACE_NAMELEN]; // Outgoing interface name
+    struct shortest_path_entry* next; // Pointer to the next entry in the list
+};
+
+/**
+ * @brief Represents the result of the BFS shortest path computation.
+ *
+ * This structure contains a list of shortest paths to all subnets in the network.
+ */
+struct shortest_path_result {
+    struct shortest_path_entry* entries; // Linked list of shortest path entries
 };
 
 struct pwospf_subsys
@@ -122,6 +147,20 @@ void add_directly_connected_subnets(struct sr_instance* sr);
 char* find_best_matching_interface(struct sr_instance* sr, uint32_t next_hop);
 void update_rtable_entry(struct sr_instance* sr, struct sr_rt* entry, uint32_t next_hop, uint32_t mask);
 struct sr_rt* lookup_route_by_subnet(struct sr_instance* sr, uint32_t subnet);
+void pwospf_flood_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface);
+void pwospf_add_new_router_to_topology(struct pwospf_subsys* subsys, uint32_t router_id,
+                                       struct ospfv2_lsu* lsu_adv, uint32_t num_links, uint32_t seq);
+int topology_changed(struct pwospf_router* router_entry, struct ospfv2_lsu* lsu_adv, uint32_t num_links);
+void pwospf_update_router_topology(struct pwospf_router* router_entry,
+                                   struct ospfv2_lsu* lsu_adv, uint32_t num_links, uint32_t seq);
+struct pwospf_router* pwospf_find_router_entry(struct pwospf_subsys* subsys, uint32_t router_id);
+
+int pwospf_validate_lsu_packet(struct sr_instance* sr, struct pwospf_subsys* subsys,
+                                struct ospfv2_hdr* ospf_hdr, uint32_t seq, char* interface);
+void pwospf_update_router_sequence_number(struct pwospf_router* router_entry, uint32_t seq);
+void add_current_router_to_topology(struct pwospf_subsys* subsys);
+void pwospf_add_self_to_topology(struct sr_instance* sr);
+void update_self_router_topology(struct pwospf_subsys* subsys, struct pwospf_interface* iface);
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
