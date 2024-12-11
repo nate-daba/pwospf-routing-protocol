@@ -29,7 +29,7 @@ struct sr_instance;
 #define NEIGHBOR_TIMEOUT (3 * HELLO_INTERVAL)
 #define LSUINT 30
 #define LSU_TIMEOUT (3 * LSUINT)
-#define MAX_ROUTERS 10 // Adjust this based on the maximum routers in your topology
+#define MAX_ROUTERS 256 // Adjust this based on the maximum routers in your topology
 
 
 /* -----------------------------------------------------------------
@@ -161,6 +161,8 @@ void pwospf_update_router_sequence_number(struct pwospf_router* router_entry, ui
 void add_current_router_to_topology(struct pwospf_subsys* subsys);
 void pwospf_add_self_to_topology(struct sr_instance* sr);
 void update_self_router_topology(struct pwospf_subsys* subsys, struct pwospf_interface* iface);
+void print_full_topology(struct pwospf_router* topology);
+void print_shortest_paths(struct shortest_path_result* result);
 
 void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
 void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
