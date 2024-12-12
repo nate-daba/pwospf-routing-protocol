@@ -194,8 +194,8 @@ static void* pwospf_run_thread(void* arg) {
         }
 
         // Clean up stale routers in the topology database
-        printf("Checking for stale routers from topology database.\n");
-        cleanup_topology_database(sr->ospf_subsys);
+        // printf("Checking for stale routers from topology database.\n");
+        // cleanup_topology_database(sr->ospf_subsys);
 
         pwospf_unlock(sr->ospf_subsys);
 
@@ -848,6 +848,8 @@ void pwospf_update_router_topology(struct pwospf_router* router_entry,
 
     router_entry->last_sequence = seq;
     router_entry->last_updated = time(NULL); // Timestamp for when this router's topology was last updated
+
+    printf("[Topology Update] Updated topology for Router ID: %s\n", router_id_str);
 }
 /**
  * @brief Determines if the received LSU indicates a change in the topology.
@@ -970,6 +972,8 @@ void pwospf_add_new_router_to_topology(struct pwospf_subsys* subsys, uint32_t ro
 
     new_router->next = subsys->topology;
     subsys->topology = new_router;
+
+    printf("[Topology Update] Added new router to topology: Router ID: %s\n", router_id_str);
 }
 /**
  * @brief Floods an LSU packet to all neighbors except the specified interface.
@@ -1045,6 +1049,19 @@ void print_full_topology(struct pwospf_router* topology) {
     }
     printf("==================================================\n");
 }
+// Helper function to verify bidirectional links
+bool is_valid_link(struct pwospf_router* router1, struct pwospf_interface* iface1,
+                  struct pwospf_router* router2) {
+    // Check if router2 lists router1 as a neighbor
+    for (struct pwospf_interface* iface2 = router2->interfaces; iface2; iface2 = iface2->next) {
+        if (iface2->neighbor.router_id == router1->router_id && 
+            iface1->neighbor.router_id == router2->router_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /**
  * @brief Perform BFS to compute shortest paths to all subnets.
  *
@@ -1053,9 +1070,6 @@ void print_full_topology(struct pwospf_router* topology) {
  * @return A struct containing the shortest path results.
  */
 struct shortest_path_result* bfs_shortest_paths(struct pwospf_router* topology, uint32_t source_router_id) {
-    printf("[Debug] Starting BFS shortest path calculation...\n");
-    print_full_topology(topology);
-
     // Allocate memory for the result
     struct shortest_path_result* result = malloc(sizeof(struct shortest_path_result));
     if (!result) {
@@ -1064,174 +1078,167 @@ struct shortest_path_result* bfs_shortest_paths(struct pwospf_router* topology, 
     }
     memset(result, 0, sizeof(struct shortest_path_result));
 
-    // BFS structures
-    uint32_t distances[MAX_ROUTERS];
+    // Dynamic queue for BFS with path tracking
+    struct {
+        int distance;
+        struct pwospf_router* router;
+        struct pwospf_interface* first_hop_iface;  // Interface to use for this path
+        uint32_t next_hop_ip;  // Next hop IP for this path
+    } *queue;
+
+    queue = malloc(sizeof(*queue) * MAX_ROUTERS);
+    if (!queue) {
+        free(result);
+        perror("[Error] Failed to allocate memory for BFS queue");
+        return NULL;
+    }
+
+    // Tracking structures
     bool visited[MAX_ROUTERS] = {false};
-    int queue[MAX_ROUTERS];
-    uint32_t router_index_to_id[MAX_ROUTERS] = {0};
+    uint32_t router_ids[MAX_ROUTERS] = {0};
     uint32_t router_count = 0;
 
-    int front = 0, rear = 0;
-
-    // Helper function: Map Router IDs to indices
+    // Helper function to get or add router index
     int get_router_index(uint32_t router_id) {
         for (uint32_t i = 0; i < router_count; i++) {
-            if (router_index_to_id[i] == router_id) {
+            if (router_ids[i] == router_id) {
                 return i;
             }
         }
         if (router_count < MAX_ROUTERS) {
-            router_index_to_id[router_count] = router_id;
+            router_ids[router_count] = router_id;
             return router_count++;
         }
-        return -1; // Error: Maximum routers exceeded
+        return -1;
     }
 
-    // Initialize BFS structures
-    for (int i = 0; i < MAX_ROUTERS; i++) {
-        distances[i] = INT_MAX;
+    // Find source router
+    struct pwospf_router* source_router = NULL;
+    for (struct pwospf_router* r = topology; r; r = r->next) {
+        if (r->router_id == source_router_id) {
+            source_router = r;
+            break;
+        }
     }
 
-    // Get the source index
-    int source_index = get_router_index(source_router_id);
-    if (source_index == -1) {
-        printf("[Error] Source router ID not found or too many routers.\n");
+    if (!source_router) {
+        free(queue);
         free(result);
         return NULL;
     }
 
-    // Enqueue the source router
-    queue[rear++] = source_index;
-    distances[source_index] = 0;
+    // Initialize BFS
+    int front = 0, rear = 0;
+    int source_index = get_router_index(source_router_id);
+    queue[rear].router = source_router;
+    queue[rear].distance = 0;
+    queue[rear].first_hop_iface = NULL;  // No hop for source
+    queue[rear].next_hop_ip = 0;  // No next hop for source
+    rear++;
+
     visited[source_index] = true;
 
-    printf("[Debug] Enqueued source router. Queue content: [");
-    for (int i = front; i < rear; i++) {
-        printf("%d ", queue[i]);
-    }
-    printf("]");
-    printf("\n[Debug] router_index_to_id mapping: ");
-    for (uint32_t i = 0; i < router_count; i++) {
-        char id_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &router_index_to_id[i], id_str, INET_ADDRSTRLEN);
-        printf("[%d: %s] ", i, id_str);
-    }
-    printf("\n");
-
-    printf("[Debug] BFS initialized for Router ID: %s\n", inet_ntoa(*(struct in_addr*)&source_router_id));
-
-    // BFS processing
+    // BFS Processing
     while (front < rear) {
-        int current_index = queue[front++];
-        uint32_t current_router_id = router_index_to_id[current_index];
+        struct pwospf_router* current_router = queue[front].router;
+        int current_distance = queue[front].distance;
+        struct pwospf_interface* current_first_hop = queue[front].first_hop_iface;
+        uint32_t current_next_hop = queue[front].next_hop_ip;
+        front++;
 
-        printf("[Debug] Dequeued Router ID (Index=%d): %s. Queue content after dequeue: [", current_index,
-               inet_ntoa(*(struct in_addr*)&current_router_id));
-        
-        for (int i = front; i < rear; i++) {
-            printf("%d ", queue[i]);
-        }
-        printf("]\n");
-
-        char current_router_id_str[INET_ADDRSTRLEN];
-        if (!inet_ntop(AF_INET, &current_router_id, current_router_id_str, INET_ADDRSTRLEN)) {
-            perror("[Error] Failed to convert Router ID to string");
-            continue;
-        }
-        printf("[Debug] Processing Router ID: %s\n", current_router_id_str);
-
-        // Find the router in the topology
-        struct pwospf_router* current_router = NULL;
-        for (struct pwospf_router* r = topology; r; r = r->next) {
-            if (r->router_id == current_router_id) {
-                current_router = r;
-                break;
-            }
-        }
-
-        if (!current_router) {
-            printf("[Error] Router ID %s not found in topology. Skipping.\n", current_router_id_str);
-            continue;
-        }
-
-        // Process interfaces of the current router
+        // Process all interfaces of current router
         for (struct pwospf_interface* iface = current_router->interfaces; iface; iface = iface->next) {
+            // Skip interfaces without valid neighbor
             uint32_t neighbor_id = iface->neighbor.router_id;
-            char neighbor_id_str[INET_ADDRSTRLEN];
-            if (!inet_ntop(AF_INET, &neighbor_id, neighbor_id_str, INET_ADDRSTRLEN)) {
-                perror("[Error] Failed to convert Neighbor Router ID to string");
-                continue;
-            }
-            
-            // Skip invalid neighbors (0.0.0.0)
-            uint32_t neighbor_subnet = iface->ip & iface->mask;
-            if (neighbor_id == 0) {
-                printf("[Debug] [Current Router ID: %s, Subnet: %s], Skipping invalid neighbor (Router ID=0.0.0.0) on interface %s.\n", 
-                current_router_id_str, inet_ntoa(*(struct in_addr*)&neighbor_subnet), iface->name);
-                continue;
-            }
+            if (neighbor_id == 0) continue;
 
             int neighbor_index = get_router_index(neighbor_id);
 
-            if (neighbor_index == -1) {
-                printf("[Error] Neighbor Router ID %s cannot be mapped to index.\n", neighbor_id_str);
-                continue;
+            // Find neighbor router
+            struct pwospf_router* neighbor_router = NULL;
+            for (struct pwospf_router* r = topology; r; r = r->next) {
+                if (r->router_id == neighbor_id) {
+                    neighbor_router = r;
+                    break;
+                }
             }
+
+            if (!neighbor_router) continue;
+
+            // Verify bidirectional link
+            if (!is_valid_link(current_router, iface, neighbor_router)) continue;
 
             if (!visited[neighbor_index]) {
                 visited[neighbor_index] = true;
-                distances[neighbor_index] = distances[current_index] + 1;
-                queue[rear++] = neighbor_index;
+                queue[rear].router = neighbor_router;
+                queue[rear].distance = current_distance + 1;
 
-                printf("[Debug] Enqueued Neighbor ID: %s (Index=%d). Queue content: ", neighbor_id_str, neighbor_index);
-                for (int i = front; i < rear; i++) {
-                    printf("%d ", queue[i]);
+                // If this is a direct neighbor of source
+                if (current_distance == 0) {
+                    queue[rear].first_hop_iface = iface;
+                    queue[rear].next_hop_ip = iface->neighbor.neighbor_ip;
+                } else {
+                    // Preserve the original first hop
+                    queue[rear].first_hop_iface = current_first_hop;
+                    queue[rear].next_hop_ip = current_next_hop;
                 }
-                printf("\n");
+                rear++;
 
-                // Find the router in the topology
-                struct pwospf_router* neighbor_router = NULL;
-                for (struct pwospf_router* r = topology; r; r = r->next) {
-                    printf("r->router_id: %u, neighbor_id: %u\n", r->router_id, neighbor_id);
-                    if (r->router_id == neighbor_id) {
-                        neighbor_router = r;
-                        break;
-                    }
-                }
-                if (!neighbor_router) {
-                    printf("[Error] Neighbor Router ID %s not found in topology. Skipping.\n", neighbor_id_str);
-                    continue;
-                }
-                // Add all subnets from this router
-                for (struct pwospf_interface* neighbor_iface = neighbor_router->interfaces; neighbor_iface; neighbor_iface = neighbor_iface->next) {
+                // Add subnets from neighbor router
+                for (struct pwospf_interface* neighbor_iface = neighbor_router->interfaces; 
+                    neighbor_iface; neighbor_iface = neighbor_iface->next) {
                     struct shortest_path_entry* new_entry = malloc(sizeof(struct shortest_path_entry));
-                    printf("here2\n");
                     if (!new_entry) {
                         perror("[Error] Failed to allocate memory for shortest path entry");
                         continue;
                     }
 
+                    // Regular subnet entry
                     new_entry->subnet = neighbor_iface->ip & neighbor_iface->mask;
                     new_entry->mask = neighbor_iface->mask;
-                    new_entry->next_hop = iface->neighbor.neighbor_ip; // Next-hop IP
-                    strncpy(new_entry->interface, iface->name, sizeof(new_entry->interface) - 1);
-                    new_entry->interface[sizeof(new_entry->interface) - 1] = '\0';
+                    new_entry->next_hop = queue[rear-1].next_hop_ip;
+                    
+                    if (queue[rear-1].first_hop_iface) {
+                        strncpy(new_entry->interface, queue[rear-1].first_hop_iface->name, 
+                            sizeof(new_entry->interface) - 1);
+                        new_entry->interface[sizeof(new_entry->interface) - 1] = '\0';
+                    } else {
+                        new_entry->interface[0] = '\0';
+                    }
+
+                    // Prepend to list
                     new_entry->next = result->entries;
                     result->entries = new_entry;
 
-                    // Debugging
-                    char subnet_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &new_entry->subnet, subnet_str, INET_ADDRSTRLEN);
-                    inet_ntop(AF_INET, &new_entry->mask, mask_str, INET_ADDRSTRLEN);
-                    inet_ntop(AF_INET, &new_entry->next_hop, next_hop_str, INET_ADDRSTRLEN);
-                    printf("[Debug] Added entry: Subnet=%s, Mask=%s, Next Hop=%s, Interface=%s\n",
-                           subnet_str, mask_str, next_hop_str, new_entry->interface);
+                    // If this neighbor has a default route (0.0.0.0/0), add a default route entry
+                    if (neighbor_iface->ip == 0 && neighbor_iface->mask == 0) {
+                        struct shortest_path_entry* default_entry = malloc(sizeof(struct shortest_path_entry));
+                        if (!default_entry) {
+                            perror("[Error] Failed to allocate memory for default route entry");
+                            continue;
+                        }
+
+                        default_entry->subnet = 0;  // 0.0.0.0
+                        default_entry->mask = 0;    // 0.0.0.0
+                        default_entry->next_hop = queue[rear-1].next_hop_ip;
+                        
+                        if (queue[rear-1].first_hop_iface) {
+                            strncpy(default_entry->interface, queue[rear-1].first_hop_iface->name, 
+                                sizeof(default_entry->interface) - 1);
+                            default_entry->interface[sizeof(default_entry->interface) - 1] = '\0';
+                        } else {
+                            default_entry->interface[0] = '\0';
+                        }
+
+                        default_entry->next = result->entries;
+                        result->entries = default_entry;
+                    }
                 }
             }
         }
     }
 
-    printf("[Debug] BFS completed successfully.\n");
+    free(queue);
     return result;
 }
 // Function to free the result structure
@@ -1329,6 +1336,33 @@ void print_shortest_paths(struct shortest_path_result* result) {
     printf("=============================================\n");
 }
 /**
+ * @brief Removes all non-directly connected routes from the routing table,
+ *        preserving directly connected routes and the default route
+ * 
+ * @param sr Pointer to the router instance
+ */
+void clear_non_direct_routes(struct sr_instance* sr) {
+    struct sr_rt* rt = sr->routing_table;
+    struct sr_rt* prev = NULL;
+    
+    while (rt) {
+        struct sr_rt* next = rt->next;
+        // Keep the route if it's directly connected (gw.s_addr == 0) 
+        // OR if it's the default route (dest.s_addr == 0)
+        if (rt->gw.s_addr != 0 && rt->dest.s_addr != 0) {
+            if (prev) {
+                prev->next = next;
+            } else {
+                sr->routing_table = next;
+            }
+            free(rt);
+        } else {
+            prev = rt;
+        }
+        rt = next;
+    }
+}
+/**
  * @brief Recalculates the routing table based on the current topology graph.
  *
  * This function computes the shortest paths to all subnets in the topology and updates
@@ -1346,17 +1380,18 @@ void recalculate_routing_table(struct sr_instance* sr) {
     struct pwospf_router* topology = subsys->topology;
     uint32_t source_router_id = subsys->router_id;
 
-    printf("[Routing Table] Recalculating routing table...\n");
+    // Clear existing non-direct routes before recalculating
+    clear_non_direct_routes(sr);
 
-    // Step 1: Compute shortest paths using BFS
-    printf("[Debug] Starting BFS for shortest paths...\n");
+    printf("Running BFS on updated topology to compute new shortest...\n");
+
     struct shortest_path_result* shortest_paths = bfs_shortest_paths(topology, source_router_id);
     if (!shortest_paths) {
         printf("[Error] BFS failed. Cannot update routing table.\n");
         return;
     }
     printf("[Debug] BFS completed successfully.\n");
-
+    printf("[Debug] New shortest paths:\n");
     print_shortest_paths(shortest_paths);
 
     // Buffers for IP address strings
@@ -1364,17 +1399,15 @@ void recalculate_routing_table(struct sr_instance* sr) {
     char mask_str[INET_ADDRSTRLEN];
     char next_hop_str[INET_ADDRSTRLEN];
 
-    // Step 2: Update the routing table
-    printf("[Debug] Starting routing table updates...\n");
+    // Process each shortest path entry
     struct shortest_path_entry* entry = shortest_paths->entries;
     while (entry) {
-        printf("[Debug] Processing shortest path entry...\n");
         if (!entry) {
             printf("[Error] NULL entry in shortest path results.\n");
             break;
         }
 
-        // Convert IP addresses to strings (once per entry)
+        // Convert IP addresses to strings
         const char* subnet_result = inet_ntop(AF_INET, &entry->subnet, subnet_str, INET_ADDRSTRLEN);
         const char* mask_result = inet_ntop(AF_INET, &entry->mask, mask_str, INET_ADDRSTRLEN);
         const char* next_hop_result = inet_ntop(AF_INET, &entry->next_hop, next_hop_str, INET_ADDRSTRLEN);
@@ -1384,44 +1417,28 @@ void recalculate_routing_table(struct sr_instance* sr) {
             entry = entry->next;
             continue;
         }
-        // check if the with subnet entry->subnet exists
+
+        // Check if route exists
         struct sr_rt* existing_entry = lookup_route_by_subnet(sr, entry->subnet);
-        if (existing_entry)
-        {
-            // If the existing route has no gateway (directly connected), replace it with the advertised route
-            if (existing_entry->gw.s_addr == 0)
-            {
-                printf("[Routing Table] Replacing directly connected route: Subnet=%s, Mask=%s, Next Hop=%s, Interface=%s\n",
-                       subnet_str, mask_str, next_hop_str, entry->interface);
-                update_rtable_entry(sr, existing_entry, entry->next_hop, entry->mask);
+        if (existing_entry) {
+            // Always update default routes when topology changes
+            if (entry->subnet == 0 && entry->mask == 0) {
+                update_rtable_entry(sr, existing_entry, entry->next_hop, entry->mask, entry->interface);
             }
-            else {
-                printf("[Routing Table] A route already exists for subnet %s. Skipping.\n", subnet_str);
+            // For non-default routes, only update if directly connected
+            else if (existing_entry->gw.s_addr == 0) {
+                update_rtable_entry(sr, existing_entry, entry->next_hop, entry->mask, entry->interface);
             }
         }
-        // // Check if the route already exists
-        // printf("[Debug] Checking if route already exists...\n");
-        // struct sr_rt* existing_entry = lookup_routing_table(sr, entry->subnet, entry->next_hop);
-        // if (existing_entry) {
-        //     printf("[Routing Table] Route already exists: Subnet=%s, Next Hop=%s. Skipping.\n",
-        //            subnet_str, next_hop_str);
-        // } 
         else {
-            // Add a new route
-            printf("[Routing Table] Adding new route: Subnet=%s, Mask=%s, Next Hop=%s, Interface=%s\n",
-                   subnet_str, mask_str, next_hop_str, entry->interface);
-
+            // Add new route
             create_rtable_entry(sr, entry->subnet, entry->next_hop, entry->mask, entry->interface);
         }
 
         entry = entry->next;
     }
 
-    // Step 3: Free BFS results
-    printf("[Debug] Freeing BFS results...\n");
     free_shortest_path_result(shortest_paths);
-
-    printf("[Routing Table] Recalculation complete.\n");
     sr_print_routing_table(sr);
 }
 // PWOSPF-specific checksum calculation
@@ -1820,7 +1837,7 @@ void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct osp
  * @param iface Name of the interface associated with this route.
  */
 void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_hop, uint32_t mask, char *iface) {
-    printf("\n[Routing Table] Creating Entry...\n");
+    // printf("\n[Routing Table] Creating Entry...\n");
 
     // Buffers for IP address strings
     char dest_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
@@ -1840,8 +1857,8 @@ void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_ho
     }
 
     // Debug logging
-    printf("[Routing Table] Adding Route: Destination=%s, Next Hop=%s, Mask=%s, Interface=%s\n",
-           dest_str, next_hop_str, mask_str, iface);
+    // printf("[Routing Table] Adding Route: Destination=%s, Next Hop=%s, Mask=%s, Interface=%s\n",
+    //        dest_str, next_hop_str, mask_str, iface);
 
     // Create the routing table entry
     struct in_addr dest_addr = { .s_addr = dest };
@@ -1850,7 +1867,7 @@ void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_ho
     sr_add_rt_entry(sr, dest_addr, next_hop_addr, mask_addr, iface);
 
     // Confirm the addition
-    printf("[Routing Table] Entry created successfully.\n");
+    // printf("[Routing Table] Entry created successfully.\n");
 }
 
 /**
@@ -1866,7 +1883,7 @@ void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_ho
  * @return Pointer to the matching routing table entry, or `NULL` if not found.
  */
 struct sr_rt* lookup_routing_table(struct sr_instance* sr, uint32_t ip_target, uint32_t next_hop) {
-    printf("[Routing Table] Checking for Entry...\n");
+    // printf("[Routing Table] Checking for Entry...\n");
 
     char target_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN];
 
@@ -1902,14 +1919,14 @@ struct sr_rt* lookup_routing_table(struct sr_instance* sr, uint32_t ip_target, u
 
         // Compare target and next hop with the current entry
         if (entry->dest.s_addr == ip_target && entry->gw.s_addr == next_hop) {
-            printf("[Routing Table] Match found: Destination=%s, Next Hop=%s\n", entry_dest_str, entry_next_hop_str);
+            // printf("[Routing Table] Match found: Destination=%s, Next Hop=%s\n", entry_dest_str, entry_next_hop_str);
             return entry;
         }
 
         entry = entry->next;
     }
 
-    printf("[Routing Table] No matching entry found for Destination=%s, Next Hop=%s\n", target_str, next_hop_str);
+    // printf("[Routing Table] No matching entry found for Destination=%s, Next Hop=%s\n", target_str, next_hop_str);
     return NULL;
 }
 
@@ -2117,17 +2134,20 @@ void add_directly_connected_subnets(struct sr_instance* sr) {
  * @param next_hop The new next hop for the route.
  * @param mask The new mask for the route.
  */
-void update_rtable_entry(struct sr_instance* sr, struct sr_rt* entry, uint32_t next_hop, uint32_t mask) {
+void update_rtable_entry(struct sr_instance* sr, struct sr_rt* entry, uint32_t next_hop, uint32_t mask, const char* iface) {
     entry->gw.s_addr = next_hop;
     entry->mask.s_addr = mask;
+    strncpy(entry->interface, iface, sizeof(entry->interface) - 1);
+    entry->interface[sizeof(entry->interface) - 1] = '\0';
 
-    char subnet_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
+    char subnet_str[INET_ADDRSTRLEN], next_hop_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN], iface_str[SR_IFACE_NAMELEN];
     inet_ntop(AF_INET, &entry->dest.s_addr, subnet_str, INET_ADDRSTRLEN);
     inet_ntop(AF_INET, &next_hop, next_hop_str, INET_ADDRSTRLEN);
     inet_ntop(AF_INET, &mask, mask_str, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &entry->interface, iface_str, SR_IFACE_NAMELEN);
 
-    printf("[Routing Table] Updated Entry: Destination=%s, Next Hop=%s, Mask=%s\n",
-           subnet_str, next_hop_str, mask_str);
+    // printf("[Routing Table] Updated Entry: Destination=%s, Next Hop=%s, Mask=%s, Interface=%s\n",
+    //        subnet_str, next_hop_str, mask_str, iface_str);
 }
 
 /**
@@ -2162,14 +2182,14 @@ char* find_best_matching_interface(struct sr_instance* sr, uint32_t next_hop) {
  * @return Pointer to the routing table entry if a match is found; NULL otherwise.
  */
 struct sr_rt* lookup_route_by_subnet(struct sr_instance* sr, uint32_t subnet) {
-    printf("[Routing Table] Checking for Entry by Subnet...\n");
+    // printf("[Routing Table] Checking for Entry by Subnet...\n");
 
     char subnet_str[INET_ADDRSTRLEN];
     if (!inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN)) {
         perror("inet_ntop failed for subnet");
         return NULL;
     }
-    printf("  Subnet: %s\n", subnet_str);
+    // printf("  Subnet: %s\n", subnet_str);
 
     struct sr_rt* entry = sr->routing_table;
     while (entry != NULL) {
@@ -2183,13 +2203,13 @@ struct sr_rt* lookup_route_by_subnet(struct sr_instance* sr, uint32_t subnet) {
 
         // Compare the destination subnet
         if (entry->dest.s_addr == subnet) {
-            printf("[Routing Table] Match found: Subnet=%s\n", entry_dest_str);
+            // printf("[Routing Table] Match found: Subnet=%s\n", entry_dest_str);
             return entry;
         }
 
         entry = entry->next;
     }
 
-    printf("[Routing Table] No matching entry found for Subnet=%s\n", subnet_str);
+    // printf("[Routing Table] No matching entry found for Subnet=%s\n", subnet_str);
     return NULL;
 }

@@ -69,7 +69,7 @@ while IFS='=' read -r key value; do
     echo "====================================================="
 
     # Ping the IP 10 times
-    ping -c 10 "$IP"
+    ping -c 5 "$IP"
 
     # Check if the ping was successful
     if [[ $? -eq 0 ]]; then

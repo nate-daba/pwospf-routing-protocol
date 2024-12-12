@@ -97,6 +97,14 @@ struct shortest_path_entry {
     struct shortest_path_entry* next; // Pointer to the next entry in the list
 };
 
+struct bfs_queue_entry {
+    int distance;
+    struct pwospf_router* router;
+    struct pwospf_interface* first_hop_iface;  // Interface to use for this path
+    uint32_t next_hop_ip;  // Next hop IP for this path
+};
+
+
 /**
  * @brief Represents the result of the BFS shortest path computation.
  *
@@ -145,7 +153,7 @@ bool route_already_implied(struct sr_instance* sr, uint32_t subnet, uint32_t mas
 int mask_to_prefix_length(uint32_t mask);
 void add_directly_connected_subnets(struct sr_instance* sr);
 char* find_best_matching_interface(struct sr_instance* sr, uint32_t next_hop);
-void update_rtable_entry(struct sr_instance* sr, struct sr_rt* entry, uint32_t next_hop, uint32_t mask);
+void update_rtable_entry(struct sr_instance* sr, struct sr_rt* entry, uint32_t next_hop, uint32_t mask, const char* iface);
 struct sr_rt* lookup_route_by_subnet(struct sr_instance* sr, uint32_t subnet);
 void pwospf_flood_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface);
 void pwospf_add_new_router_to_topology(struct pwospf_subsys* subsys, uint32_t router_id,
@@ -157,6 +165,9 @@ struct pwospf_router* pwospf_find_router_entry(struct pwospf_subsys* subsys, uin
 
 int pwospf_validate_lsu_packet(struct sr_instance* sr, struct pwospf_subsys* subsys,
                                 struct ospfv2_hdr* ospf_hdr, uint32_t seq, char* interface);
+void clear_non_direct_routes(struct sr_instance* sr);
+bool is_valid_link(struct pwospf_router* router1, struct pwospf_interface* iface1,
+                  struct pwospf_router* router2);
 void pwospf_update_router_sequence_number(struct pwospf_router* router_entry, uint32_t seq);
 void add_current_router_to_topology(struct pwospf_subsys* subsys);
 void pwospf_add_self_to_topology(struct sr_instance* sr);

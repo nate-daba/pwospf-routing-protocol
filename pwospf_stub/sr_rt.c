@@ -127,26 +127,46 @@ void sr_add_rt_entry(struct sr_instance* sr, struct in_addr dest,
  *
  *---------------------------------------------------------------------*/
 
-void sr_print_routing_table(struct sr_instance* sr)
-{
-    struct sr_rt* rt_walker = 0;
+void sr_print_routing_table(struct sr_instance* sr) {
+    struct sr_rt* rt_walker = sr->routing_table;
 
-    if(sr->routing_table == 0)
-    {
-        printf(" Routing table empty \n");
+    if (!rt_walker) {
+        printf("Routing table is empty.\n");
         return;
     }
+    printf("Routing Table:\n");
+    printf("===================================================================================\n");
+    printf("|      Destination       |       Gateway       |        Mask        |  Interface  |\n");
+    printf("===================================================================================\n");
 
-    rt_walker = sr->routing_table;
-    
-    sr_print_routing_entry(rt_walker);
-    while(rt_walker->next)
-    {
-        rt_walker = rt_walker->next; 
-        sr_print_routing_entry(rt_walker);
+    char dest_str[INET_ADDRSTRLEN], gw_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
+
+    while (rt_walker) {
+        // Convert numeric IP addresses to human-readable strings
+        if (!inet_ntop(AF_INET, &rt_walker->dest, dest_str, INET_ADDRSTRLEN)) {
+            perror("Failed to convert Destination IP to string");
+            rt_walker = rt_walker->next;
+            continue;
+        }
+        if (!inet_ntop(AF_INET, &rt_walker->gw, gw_str, INET_ADDRSTRLEN)) {
+            perror("Failed to convert Gateway IP to string");
+            rt_walker = rt_walker->next;
+            continue;
+        }
+        if (!inet_ntop(AF_INET, &rt_walker->mask, mask_str, INET_ADDRSTRLEN)) {
+            perror("Failed to convert Mask to string");
+            rt_walker = rt_walker->next;
+            continue;
+        }
+
+        // Print the routing table entry in the table format
+        printf("| %-22s | %-18s | %-18s | %-12s |\n",
+               dest_str, gw_str, mask_str, rt_walker->interface);
+
+        rt_walker = rt_walker->next;
     }
-
-} /* -- sr_print_routing_table -- */
+    printf("===================================================================================\n");
+}
 
 /*--------------------------------------------------------------------- 
  * Method:
