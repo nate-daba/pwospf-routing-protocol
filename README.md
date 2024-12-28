@@ -159,26 +159,20 @@ This topology is used for both development and testing, though IP assignments ma
 
 <details>
 <summary><strong>System Components</strong></summary>
-Core Components
 
-PWOSPF Subsystem
+### Core Components
+* **PWOSPF Subsystem**
+  * Controls protocol operations and neighbor discovery
+  * Manages link-state database and routing updates
+  * Handles HELLO and LSU packet processing
 
-Controls protocol operations and neighbor discovery
-Manages link-state database and routing updates
-Handles HELLO and LSU packet processing
+* **Interface Manager**
+  * Manages multiple network interfaces
+  * Processes incoming/outgoing PWOSPF packets
+  * Maintains interface states and neighbor relationships
 
-
-Interface Manager
-
-Manages multiple network interfaces
-Processes incoming/outgoing PWOSPF packets
-Maintains interface states and neighbor relationships
-
-
-Route Calculator
-
-Implements shortest path computation
-Updates routing table based on topology changes
-Handles dynamic and static route management
-
+* **Route Calculator**
+  * Implements shortest path computation
+  * Updates routing table based on topology changes
+  * Handles dynamic and static route management
 </details>
