@@ -3,7 +3,7 @@
 ## 📋 Table of Contents
 * [Overview](#-overview)
 * [Project Objectives](#-project-objectives)
-* [Features](#features) *(To be completed)*
+* [Features](#-features)
 * [Technical Architecture](#technical-architecture) *(To be completed)*
 * [Getting Started](#getting-started) *(To be completed)*
 * [Implementation Details](#implementation-details) *(To be completed)*
@@ -23,7 +23,8 @@ The implementation builds upon a basic router framework to create a fully functi
 
 ## 🎯 Project Objectives
 
-### Primary Objectives
+<details>
+<summary><strong>Primary Objectives</strong></summary>
 
 #### 1. Dynamic Route Discovery
 Implement PWOSPF protocol to enable routers to:
@@ -40,8 +41,10 @@ Implement PWOSPF protocol to enable routers to:
 * Implement HELLO protocol for neighbor discovery and maintenance
 * Develop Link State Update (LSU) mechanism for topology information exchange
 * Create efficient shortest path computation for routing decisions
+</details>
 
-### Technical Requirements
+<details>
+<summary><strong>Technical Requirements</strong></summary>
 
 #### 1. Protocol Specifications
 * PWOSPF Version 2 compatibility
@@ -60,17 +63,23 @@ Implement PWOSPF protocol to enable routers to:
 * Link failure and recovery handling
 * Topology database maintenance and cleanup
 * Route recomputation on network changes
+</details>
 
 ## ⚡ Features
 
-### Core Routing Capabilities
+<details>
+<summary><strong>Core Routing Capabilities</strong></summary>
+
 * **Dynamic Routing Table Construction**
   * Automatic building of routing tables from link-state messages
   * Support for both static and dynamic routes
   * Intelligent handling of directly connected subnets
   * Default route management for internet connectivity
+</details>
 
-### Protocol Implementation
+<details>
+<summary><strong>Protocol Implementation</strong></summary>
+
 * **HELLO Protocol**
   * Periodic broadcast of HELLO messages (10-second intervals)
   * Dynamic neighbor discovery and maintenance
@@ -82,8 +91,11 @@ Implement PWOSPF protocol to enable routers to:
   * Efficient flooding mechanism with loop prevention
   * Sequence number tracking for update ordering
   * TTL-based flood control
+</details>
 
-### Topology Management
+<details>
+<summary><strong>Topology Management</strong></summary>
+
 * **Network Discovery**
   * Complete topology database maintenance
   * Automatic detection of network changes
@@ -95,24 +107,26 @@ Implement PWOSPF protocol to enable routers to:
   * Dynamic recovery from network changes
   * Topology database cleanup for stale entries
   * Immediate route recomputation on topology changes
+</details>
 
-### Routing Algorithm
+<details>
+<summary><strong>Routing Algorithm & Protocol Specifications</strong></summary>
+
 * **Path Computation**
   * Implementation of shortest path algorithm
   * Subnet-based routing decisions
   * Proper handling of subnet masks
   * Next-hop computation for optimal forwarding
 
-### Protocol Specifications
 * **PWOSPF v2 Compliance**
   * Standard-compliant packet formats
   * Proper checksum calculation and verification
   * Area-based routing (single area support)
   * Router ID management
 
-### IP Packet Handling
-* **OSPFv2-Compatible Headers**
+* **IP Packet Handling**
   * Protocol number 89 (OSPF standard)
   * Support for broadcast addresses
   * Proper IP encapsulation
   * Checksum verification and generation
+</details>
