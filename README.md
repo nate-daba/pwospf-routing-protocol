@@ -138,7 +138,7 @@ Implement PWOSPF protocol to enable routers to:
 
 The project is developed and tested on a specific network topology consisting of three virtual PWOSPF routers (vhost1, vhost2, and vhost3) interconnected via subnets. This topology demonstrates the router's capability to handle dynamic route discovery, link failures, and network changes.
 
-![Network Topology](images/topology.png)
+![Network Topology](images/113.png)
 
 Key aspects of the topology:
 
