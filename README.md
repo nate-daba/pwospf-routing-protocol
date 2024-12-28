@@ -130,3 +130,31 @@ Implement PWOSPF protocol to enable routers to:
   * Proper IP encapsulation
   * Checksum verification and generation
 </details>
+
+## 🏗️ Technical Architecture
+
+<details>
+<summary><strong>Network Topology</strong></summary>
+
+The project is developed and tested on a specific network topology consisting of three virtual PWOSPF routers (vhost1, vhost2, and vhost3) interconnected via subnets. This topology demonstrates the router's capability to handle dynamic route discovery, link failures, and network changes.
+
+![Network Topology](images/topology.png)
+
+Key aspects of the topology:
+
+* Each link represents a subnet, with two IP addresses (one for each end)
+* All three routers (vhost1, vhost2, and vhost3) run the PWOSPF protocol
+* The gateway provides connectivity to the internet (CS department network)
+* Two servers act as end hosts for testing connectivity
+* vhost1 connects to the gateway and serves as the internet access point
+* Each router has multiple interfaces with specific IP/subnet configurations
+* The topology allows testing of various scenarios including:
+  * Dynamic route discovery
+  * Link failure detection
+  * Path recomputation
+  * Network recovery
+
+This topology is used for both development, though IP assignments may differ during evaluation to ensure no hardcoding of addresses in the implementation.
+</details>
+
+[Additional Technical Architecture sections would follow here...]
