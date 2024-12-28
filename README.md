@@ -1,8 +1,8 @@
 # PWOSPF Router Implementation
 
 ## 📋 Table of Contents
-* [Overview](#overview)
-* [Project Objectives](#project-objectives)
+* [Overview](#-overview)
+* [Project Objectives](#-project-objectives)
 * [Features](#features) *(To be completed)*
 * [Technical Architecture](#technical-architecture) *(To be completed)*
 * [Getting Started](#getting-started) *(To be completed)*
