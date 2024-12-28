@@ -157,4 +157,28 @@ Key aspects of the topology:
 This topology is used for both development and testing, though IP assignments may differ during evaluation to ensure no hardcoding of addresses in the implementation.
 </details>
 
-[Additional Technical Architecture sections would follow here...]
+<details>
+<summary><strong>System Components</strong></summary>
+Core Components
+
+PWOSPF Subsystem
+
+Controls protocol operations and neighbor discovery
+Manages link-state database and routing updates
+Handles HELLO and LSU packet processing
+
+
+Interface Manager
+
+Manages multiple network interfaces
+Processes incoming/outgoing PWOSPF packets
+Maintains interface states and neighbor relationships
+
+
+Route Calculator
+
+Implements shortest path computation
+Updates routing table based on topology changes
+Handles dynamic and static route management
+
+</details>
