@@ -61,5 +61,58 @@ Implement PWOSPF protocol to enable routers to:
 * Topology database maintenance and cleanup
 * Route recomputation on network changes
 
----
-*[Additional sections to be completed in subsequent updates]*
+## ⚡ Features
+
+### Core Routing Capabilities
+* **Dynamic Routing Table Construction**
+  * Automatic building of routing tables from link-state messages
+  * Support for both static and dynamic routes
+  * Intelligent handling of directly connected subnets
+  * Default route management for internet connectivity
+
+### Protocol Implementation
+* **HELLO Protocol**
+  * Periodic broadcast of HELLO messages (10-second intervals)
+  * Dynamic neighbor discovery and maintenance
+  * Automatic detection of neighbor timeouts (30-second threshold)
+  * Real-time neighbor state tracking
+
+* **Link State Updates (LSU)**
+  * Periodic LSU broadcasts (30-second intervals)
+  * Efficient flooding mechanism with loop prevention
+  * Sequence number tracking for update ordering
+  * TTL-based flood control
+
+### Topology Management
+* **Network Discovery**
+  * Complete topology database maintenance
+  * Automatic detection of network changes
+  * Bidirectional link verification
+  * Support for multi-router environments
+
+* **Fault Tolerance**
+  * Automatic link failure detection
+  * Dynamic recovery from network changes
+  * Topology database cleanup for stale entries
+  * Immediate route recomputation on topology changes
+
+### Routing Algorithm
+* **Path Computation**
+  * Implementation of shortest path algorithm
+  * Subnet-based routing decisions
+  * Proper handling of subnet masks
+  * Next-hop computation for optimal forwarding
+
+### Protocol Specifications
+* **PWOSPF v2 Compliance**
+  * Standard-compliant packet formats
+  * Proper checksum calculation and verification
+  * Area-based routing (single area support)
+  * Router ID management
+
+### IP Packet Handling
+* **OSPFv2-Compatible Headers**
+  * Protocol number 89 (OSPF standard)
+  * Support for broadcast addresses
+  * Proper IP encapsulation
+  * Checksum verification and generation
