@@ -154,7 +154,7 @@ Key aspects of the topology:
   * Path recomputation
   * Network recovery
 
-This topology is used for both development, though IP assignments may differ during evaluation to ensure no hardcoding of addresses in the implementation.
+This topology is used for both development and testing, though IP assignments may differ during evaluation to ensure no hardcoding of addresses in the implementation.
 </details>
 
 [Additional Technical Architecture sections would follow here...]
