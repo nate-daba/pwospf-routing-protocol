@@ -4,7 +4,7 @@
 * [Overview](#-overview)
 * [Project Objectives](#-project-objectives)
 * [Features](#-features)
-* [Technical Architecture](#technical-architecture)
+* [Technical Architecture](#-technical-architecture)
 * [Getting Started](#getting-started) *(To be completed)*
 * [Implementation Details](#implementation-details) *(To be completed)*
 * [Testing and Validation](#testing-and-validation) *(To be completed)*
