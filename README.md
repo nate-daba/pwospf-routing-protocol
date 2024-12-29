@@ -132,7 +132,6 @@ Implement PWOSPF protocol to enable routers to:
 </details>
 
 ## 🏗️ Technical Architecture
-
 <details>
 <summary><strong>Network Topology</strong></summary>
 
