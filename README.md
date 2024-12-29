@@ -131,7 +131,8 @@ Implement PWOSPF protocol to enable routers to:
   * Checksum verification and generation
 </details>
 
-## 🏗️ Technical Architecture
+* [Technical Architecture](#%EF%B8%8F-technical-architecture)
+
 <details>
 <summary><strong>Network Topology</strong></summary>
 
