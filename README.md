@@ -4,7 +4,7 @@
 * [Overview](#-overview)
 * [Project Objectives](#-project-objectives)
 * [Features](#-features)
-* [Technical Architecture](#-technical-architecture)
+* [Technical Architecture](#%EF%B8%8F-technical-architecture)
 * [Getting Started](#getting-started) *(To be completed)*
 * [Implementation Details](#implementation-details) *(To be completed)*
 * [Testing and Validation](#testing-and-validation) *(To be completed)*
@@ -131,7 +131,7 @@ Implement PWOSPF protocol to enable routers to:
   * Checksum verification and generation
 </details>
 
-* [Technical Architecture](#%EF%B8%8F-technical-architecture)
+## 🏗️ Technical Architecture
 
 <details>
 <summary><strong>Network Topology</strong></summary>
