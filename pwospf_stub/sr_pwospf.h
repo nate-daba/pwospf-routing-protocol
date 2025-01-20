@@ -129,30 +129,20 @@ struct pwospf_subsys
 };
 
 int pwospf_init(struct sr_instance* sr);
-void pwospf_print_subsys(struct pwospf_subsys* subsys);
 void send_pwospf_hello(struct sr_instance* sr);
 void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interface);
 void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time);
 int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, unsigned int ospf_len);
 void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface);
 void read_static_routes(struct sr_instance* sr, struct pwospf_subsys* subsys);
-int validate_link(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t subnet, uint32_t mask, uint32_t neighbor_id);
-void update_topology_database(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t seq, struct ospfv2_lsu* lsu_adv, uint32_t num_links);
-void cleanup_topology_database(struct pwospf_subsys* subsys);
 void print_lsu_debug_info(uint32_t router_id, uint32_t neighbor_ip, uint32_t num_links, struct ospfv2_lsu* lsu_adv);
 void print_topology(struct pwospf_subsys* subsys);
-void print_router_interfaces(struct pwospf_router* router);
-void update_next_hop(struct pwospf_router* router, uint32_t received_from_ip, uint32_t sender_router_id);
 struct node* node_exists(uint32_t router_id, uint32_t subnet);
-void update_topology_graph(uint32_t origin_router, uint32_t src_addr, struct ospfv2_lsu* advertised_links, int num_links, int sequence_num, struct sr_instance* sr);
 void create_rtable_entry(struct sr_instance *sr, uint32_t dest, uint32_t next_hop, uint32_t mask, char *iface);
 struct sr_rt* lookup_routing_table(struct sr_instance* sr, uint32_t ip_target, uint32_t next_hop);
-struct pwospf_interface* find_interface_by_name(struct sr_instance* sr, const char* interface_name);
 void recalculate_routing_table(struct sr_instance* sr);
 bool route_already_implied(struct sr_instance* sr, uint32_t subnet, uint32_t mask);
-int mask_to_prefix_length(uint32_t mask);
 void add_directly_connected_subnets(struct sr_instance* sr);
-char* find_best_matching_interface(struct sr_instance* sr, uint32_t next_hop);
 void update_rtable_entry(struct sr_instance* sr, struct sr_rt* entry, uint32_t next_hop, uint32_t mask, const char* iface);
 struct sr_rt* lookup_route_by_subnet(struct sr_instance* sr, uint32_t subnet);
 void pwospf_flood_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len, char* interface);
@@ -170,15 +160,10 @@ bool is_valid_link(struct pwospf_router* router1, struct pwospf_interface* iface
                   struct pwospf_router* router2);
 void pwospf_update_router_sequence_number(struct pwospf_router* router_entry, uint32_t seq);
 void add_current_router_to_topology(struct pwospf_subsys* subsys);
-void pwospf_add_self_to_topology(struct sr_instance* sr);
 void update_self_router_topology(struct pwospf_subsys* subsys, struct pwospf_interface* iface);
-void print_full_topology(struct pwospf_router* topology);
 void print_shortest_paths(struct shortest_path_result* result);
 
-void pwospf_update_neighbor(struct pwospf_interface* iface, uint32_t router_id, uint32_t neighbor_ip);
-void pwospf_remove_timed_out_neighbors(struct pwospf_interface* iface);
 void pwospf_send_lsu(struct sr_instance* sr, const char* exclude_iface);
-int pwospf_validate_lsu(struct pwospf_subsys* subsys, uint32_t router_id, uint32_t seq);
 
 // uint16_t checksum_pwospf(uint8_t* data, size_t length, size_t auth_offset, size_t auth_length);
 uint16_t checksum_pwospf(uint16_t* buf, size_t count);
