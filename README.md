@@ -5,7 +5,7 @@
 * [Project Objectives](#-project-objectives)
 * [Features](#-features)
 * [Technical Architecture](#%EF%B8%8F-technical-architecture)
-* [Implementation Details](#implementation-details) *(To be completed)*
+* [Implementation Details](#implementation-details)
 * [Testing and Validation](#testing-and-validation) *(To be completed)*
 
 ## 🔍 Overview
@@ -174,7 +174,7 @@ This topology is used for both development and testing, though IP assignments ma
   * Handles dynamic and static route management
 </details>
 
-## 🚀 Implementation Details
+## 🚀 Implementation Details <a name="implementation-details"></a>
 
 The PWOSPF router is implemented in several core components and data structures, primarily within **`sr_pwospf.c`** and its related headers. The design follows a simplified link-state protocol that enables routers to discover neighbors, exchange topology information, and perform shortest path calculations. Key aspects include:
 
@@ -208,7 +208,7 @@ The PWOSPF router is implemented in several core components and data structures,
 With these components, the system provides a complete yet simplified OSPF-like environment that adapts to network changes on the fly.
 
 
-## 🧪 Testing and Validation
+## 🧪 Testing and Validation <a name="testing-and-validation"></a>
 
 This project includes a script (**`test.sh`**) that verifies correct behavior under various scenarios. The tests aim to validate the PWOSPF router’s functionality, including route discovery, neighbor timeouts, link-state flooding, and end-to-end connectivity checks.
 
@@ -242,8 +242,6 @@ Then follow the steps below to start the routers and run automated tests:
         ```bash
         ../sr -t 113 -v vhost3 -r rtable.empty
         ```
-    
-
 2. **Running Automated Tests**  
    - Use the **`-t`** option to specify a topology number. For example:
      ```bash
