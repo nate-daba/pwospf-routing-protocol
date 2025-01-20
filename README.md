@@ -243,7 +243,7 @@ Then follow the steps below to start the routers and run automated tests:
         ../sr -t 113 -v vhost3 -r rtable.empty
         ```
 2. **Running Automated Tests**  
-   - Use the **`-t`** option to specify a topology number. For example:
+   - Open a fourth ssh connection and run the **`test.sh`** script. Use the **`-t`** option to specify a topology number. For example:
      ```bash
      ./test.sh -t 113
      ```
