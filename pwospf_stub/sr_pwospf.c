@@ -29,14 +29,26 @@
 static void* pwospf_run_thread(void* arg);
 
 struct node *nodes = NULL;
-/*---------------------------------------------------------------------
- * Method: pwospf_init(..)
+
+/**
+ * @brief Initializes the PWOSPF subsystem for a given router instance.
  *
- * Sets up the internal data structures for the pwospf subsystem
+ * This function allocates and configures the PWOSPF subsystem data structures,
+ * including interfaces, topology, and threading. It also spawns the PWOSPF
+ * subsystem thread to handle HELLO and LSU functionality.
  *
- * You may assume that the interfaces have been created and initialized
- * by this point.
- *---------------------------------------------------------------------*/
+ * Steps performed:
+ * - Allocates and initializes the `pwospf_subsys` structure.
+ * - Builds a list of PWOSPF interfaces from the router's interface list.
+ * - Reads and processes any static routes to determine if this router is a gateway.
+ * - Creates and starts the PWOSPF thread (responsible for periodic HELLO and LSU).
+ * - Adds the current router to the PWOSPF topology database.
+ * - Adds directly connected subnets to the routing table.
+ * - Prints the updated routing table for debugging/verification.
+ *
+ * @param sr Pointer to the router instance (`struct sr_instance`).
+ * @return int Returns 0 on successful initialization.
+ */
 
 int pwospf_init(struct sr_instance* sr) {
     assert(sr);
@@ -101,6 +113,24 @@ int pwospf_init(struct sr_instance* sr) {
     return 0;
 }
 
+/**
+ * @brief Adds the current router (as defined by the PWOSPF subsystem) to the topology database.
+ *
+ * This function allocates a new `pwospf_router` structure corresponding to the
+ * current router, replicates its interfaces, and prepends the new router entry
+ * to the subsystem's linked-list of routers (the topology).
+ *
+ * Steps performed:
+ * - Allocates memory for a new `pwospf_router` and initializes it with the
+ *   current router's ID, area, and LSU interval.
+ * - Clones each `pwospf_interface` from the subsystem's interface list into
+ *   the newly allocated router entry.
+ * - Inserts the new router at the head of the topology linked list (`subsys->topology`).
+ * - Logs a message indicating that the current router has been added.
+ *
+ * @param subsys Pointer to the PWOSPF subsystem.
+ *               Must not be NULL, or no action is taken.
+ */
 void add_current_router_to_topology(struct pwospf_subsys* subsys) {
     if (!subsys) return;
 
@@ -136,39 +166,53 @@ void add_current_router_to_topology(struct pwospf_subsys* subsys) {
 
     printf("[Topology] Current router added to topology: Router ID: %u\n", current_router->router_id);
 }
-/*---------------------------------------------------------------------
- * Method: pwospf_lock
+/**
+ * @brief Acquires the mutex lock associated with the PWOSPF subsystem.
  *
- * Lock mutex associated with pwospf_subsys
+ * This function wraps a call to `pthread_mutex_lock()` on the subsystem's `lock`.
+ * If the lock acquisition fails, an assertion triggers, terminating the program.
  *
- *---------------------------------------------------------------------*/
+ * @param subsys Pointer to the PWOSPF subsystem whose lock is to be acquired.
+ */
 
 void pwospf_lock(struct pwospf_subsys* subsys)
 {
     if ( pthread_mutex_lock(&subsys->lock) )
     { assert(0); }
-} /* -- pwospf_subsys -- */
+} 
 
-/*---------------------------------------------------------------------
- * Method: pwospf_unlock
+/**
+ * @brief Releases the mutex lock associated with the PWOSPF subsystem.
  *
- * Unlock mutex associated with pwospf subsystem
+ * This function wraps a call to `pthread_mutex_unlock()` on the subsystem's `lock`.
+ * If the unlock operation fails, an assertion triggers, terminating the program.
  *
- *---------------------------------------------------------------------*/
+ * @param subsys Pointer to the PWOSPF subsystem whose lock is to be released.
+ */
 
 void pwospf_unlock(struct pwospf_subsys* subsys)
 {
     if ( pthread_mutex_unlock(&subsys->lock) )
     { assert(0); }
-} /* -- pwospf_subsys -- */
+}
 
-/*---------------------------------------------------------------------
- * Method: pwospf_run_thread
+/**
+ * @brief Main thread function for the PWOSPF subsystem.
  *
- * Main thread of pwospf subsystem.
+ * This function runs in an infinite loop to handle periodic PWOSPF tasks:
+ * - Sends HELLO messages at a fixed interval.
+ * - Checks for neighbor timeouts and removes inactive neighbors.
+ * - Periodically sends Link State Update (LSU) packets when the
+ *   configured interval (`LSUINT`) has elapsed.
  *
- *---------------------------------------------------------------------*/
-
+ * The function locks the PWOSPF subsystem (`pwospf_lock`) before performing
+ * these operations and unlocks it (`pwospf_unlock`) once done. Finally, it
+ * sleeps for `HELLO_INTERVAL` seconds before repeating.
+ *
+ * @param arg Pointer to the router instance (`struct sr_instance`), passed
+ *            when creating the thread.
+ * @return Returns `NULL`, though this thread never exits under normal conditions.
+ */
 static void* pwospf_run_thread(void* arg) {
     struct sr_instance* sr = (struct sr_instance*)arg;
     time_t last_lsu_time = time(NULL); // Initialize last LSU time
@@ -193,10 +237,6 @@ static void* pwospf_run_thread(void* arg) {
             last_lsu_time = now; // Reset the LSU timer
         }
 
-        // Clean up stale routers in the topology database
-        // printf("Checking for stale routers from topology database.\n");
-        // cleanup_topology_database(sr->ospf_subsys);
-
         pwospf_unlock(sr->ospf_subsys);
 
         // Sleep for HELLO_INTERVAL seconds
@@ -206,6 +246,25 @@ static void* pwospf_run_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * @brief Validates a PWOSPF packet (either HELLO or LSU) against basic OSPF checks.
+ *
+ * This function checks the PWOSPF version, area ID, authentication fields, and
+ * verifies the checksum based on the packet type (HELLO or LSU). If any check
+ * fails, the packet is considered invalid and should be dropped.
+ *
+ * Validation Steps:
+ * 1. Check PWOSPF version and area ID against expected values.
+ * 2. Reject packets with unsupported authentication.
+ * 3. Compute and compare the packet's checksum:
+ *    - For HELLO: a fixed-size checksum over the OSPF header.
+ *    - For LSU: a length-based, aligned checksum over the entire OSPF payload.
+ *
+ * @param sr        Pointer to the main router instance.
+ * @param ospf_hdr  Pointer to the PWOSPF header within the packet.
+ * @param ospf_len  Length of the PWOSPF portion of the packet (bytes).
+ * @return int      Returns 1 if the packet is valid, 0 if invalid or unsupported.
+ */
 int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, unsigned int ospf_len) {
     assert(sr);
     assert(ospf_hdr);
@@ -281,6 +340,19 @@ int validate_pwospf_packet(struct sr_instance* sr, struct ospfv2_hdr* ospf_hdr, 
     return 1; // Valid packet
 }
 
+/**
+ * @brief Sends PWOSPF HELLO packets on all active PWOSPF interfaces.
+ *
+ * This function builds and broadcasts a HELLO packet to the AllSPFRouters
+ * multicast address (`224.0.0.5`) for each interface in the PWOSPF subsystem.
+ * Steps performed include:
+ * 1. Constructing Ethernet and IP headers.
+ * 2. Setting up the PWOSPF HELLO header (OSPF protocol number, router ID, etc.).
+ * 3. Computing and inserting the OSPF checksum.
+ * 4. Sending the packet via `sr_send_packet` on each interface.
+ *
+ * @param sr Pointer to the main router instance (`struct sr_instance`).
+ */
 void send_pwospf_hello(struct sr_instance* sr) {
     assert(sr);
 
@@ -365,6 +437,22 @@ void send_pwospf_hello(struct sr_instance* sr) {
     }
 }
 
+/**
+ * @brief Processes an incoming PWOSPF HELLO packet and updates neighbor information.
+ *
+ * This function is called when a PWOSPF HELLO packet arrives on a specific interface.
+ * It performs the following steps:
+ * 1. Validates the receiving interface.
+ * 2. Verifies the network mask in the HELLO header matches the interface's mask.
+ * 3. Extracts the neighbor's router ID and IP address.
+ * 4. Updates (or replaces) the neighbor record in the corresponding `pwospf_interface`.
+ * 5. Triggers a Link State Update (LSU) if a new neighbor is discovered.
+ * 6. Updates the current router entry in the topology and recalculates the routing table.
+ *
+ * @param sr         Pointer to the main router instance (`struct sr_instance`).
+ * @param packet     Pointer to the raw packet data containing Ethernet, IP, OSPF, and HELLO headers.
+ * @param interface  The name of the interface on which the HELLO packet was received.
+ */
 void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interface) {
     assert(sr);
     assert(packet);
@@ -442,11 +530,26 @@ void handle_pwospf_hello(struct sr_instance* sr, uint8_t* packet, char* interfac
 
     printf("No matching PWOSPF interface for HELLO packet received on %s\n", interface);
 }
+
 /**
- * @brief Updates the current router's entry in the topology with the updated neighbor information.
+ * @brief Updates the topology entry of the local router (`subsys->router_id`) with new or modified interface information.
  *
- * @param subsys Pointer to the PWOSPF subsystem.
- * @param iface Pointer to the PWOSPF interface with updated neighbor information.
+ * This function searches the PWOSPF subsystem's topology for the local router (identified
+ * by `subsys->router_id`). Once found, it tries to locate an interface matching the IP
+ * and mask of the provided `iface`. If a match is found, it updates the neighbor and
+ * next-hop data for that interface. If no match is found, a new interface entry is
+ * dynamically allocated and prepended to the local router's interface list.
+ *
+ * Steps performed:
+ * 1. Locate the local router in the topology (matching `subsys->router_id`).
+ * 2. Scan the local router's interface list to find a matching IP/mask.
+ * 3. If matched, update the neighbor fields and `next_hop`.
+ * 4. If no match, allocate a new interface, copy relevant fields, and insert it into the list.
+ * 5. If the local router is not present in the topology, log a message and return.
+ *
+ * @param subsys Pointer to the PWOSPF subsystem containing the topology database.
+ * @param iface  Pointer to the interface whose updates (neighbor info, next hop, etc.)
+ *               should be reflected in the local router's topology entry.
  */
 void update_self_router_topology(struct pwospf_subsys* subsys, struct pwospf_interface* iface) {
     assert(subsys);
@@ -500,6 +603,27 @@ void update_self_router_topology(struct pwospf_subsys* subsys, struct pwospf_int
 
     printf("[Topology Update] Self-router not found in topology. Cannot update interfaces.\n");
 }
+
+/**
+ * @brief Checks for neighbor timeouts and updates the topology accordingly.
+ *
+ * This function iterates over all PWOSPF interfaces in the subsystem to detect
+ * neighbors whose HELLO messages have timed out. Any neighbor whose last HELLO
+ * reception time exceeds `NEIGHBOR_TIMEOUT` is considered inactive and removed.
+ * If a neighbor is removed, the local router's topology is updated and a Link
+ * State Update (LSU) flood is triggered, followed by a routing table recalculation.
+ *
+ * Steps performed:
+ * 1. For each interface, check the neighbor's `last_hello_received` timestamp.
+ * 2. If the neighbor has timed out, reset the neighbor fields and update the
+ *    local router's topology via `update_self_router_topology()`.
+ * 3. If any neighbor was removed, print the updated topology, flood an LSU to
+ *    notify other routers, recalculate routing, and reset `last_lsu_time`.
+ *
+ * @param sr             Pointer to the main router instance (`struct sr_instance`).
+ * @param last_lsu_time  Pointer to the timestamp tracking when the last LSU was sent.
+ *                       This is updated if the topology changes and an LSU is triggered.
+ */
 void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time) {
     assert(sr);
     assert(last_lsu_time);
@@ -557,6 +681,25 @@ void pwospf_check_on_neighbors(struct sr_instance* sr, time_t* last_lsu_time) {
     }
 }
 
+/**
+ * @brief Constructs and sends a PWOSPF Link State Update (LSU) to active neighbors on all interfaces.
+ *
+ * This function iterates over every PWOSPF interface in the subsystem (except an
+ * optional `exclude_iface`) and sends an LSU packet to each valid neighbor.
+ * For each interface:
+ * 1. Gathers link information from all interfaces (subnets, masks, and neighbor IDs) 
+ *    to form a list of advertisements (LSU entries).
+ * 2. Optionally includes a default route advertisement if this router is marked as a gateway.
+ * 3. Builds Ethernet, IP, and OSPF headers, then constructs the LSU header (`ospfv2_lsu_hdr`) 
+ *    containing the sequence number and TTL.
+ * 4. Calculates and sets the OSPF checksum.
+ * 5. Sends the packet to the neighbor's IP address using `sr_send_packet()`.
+ * 6. Logs each sent packet, indicating the interface, neighbor IP, and number of advertisements.
+ *
+ * @param sr            Pointer to the main router instance (`struct sr_instance`).
+ * @param exclude_iface If non-NULL, the name of an interface to skip sending LSUs on.
+ *                     If NULL, all interfaces with a valid neighbor will be used.
+ */
 void pwospf_send_lsu(struct sr_instance* sr, const char* exclude_iface) {
     struct pwospf_subsys* subsys = sr->ospf_subsys;
     assert(subsys);
@@ -1009,7 +1152,18 @@ void pwospf_flood_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len,
         iface = iface->next;
     }
 }
-// Helper function to verify bidirectional links
+
+/**
+ * @brief Checks if a link between two routers is valid by verifying bidirectional neighbor relationships.
+ *
+ * This function examines the specified interface (`iface1`) on `router1` and looks
+ * for an interface on `router2` such that each router identifies the other as its neighbor.
+ *
+ * @param router1 Pointer to the first router in the link.
+ * @param iface1  Pointer to the interface on `router1` that should have `router2` as a neighbor.
+ * @param router2 Pointer to the second router in the link.
+ * @return `true` if both sides list each other as a neighbor, `false` otherwise.
+ */
 bool is_valid_link(struct pwospf_router* router1, struct pwospf_interface* iface1,
                   struct pwospf_router* router2) {
     // Check if router2 lists router1 as a neighbor
@@ -1201,7 +1355,15 @@ struct shortest_path_result* bfs_shortest_paths(struct pwospf_router* topology, 
     free(queue);
     return result;
 }
-// Function to free the result structure
+/**
+ * @brief Frees the memory allocated for a shortest path result and its entries.
+ *
+ * This function de-allocates the linked list of `shortest_path_entry` structures
+ * in the `entries` field, then frees the `shortest_path_result` object itself.
+ *
+ * @param result Pointer to the `shortest_path_result` structure to be freed.
+ *               If `result` is NULL, the function returns immediately.
+ */
 void free_shortest_path_result(struct shortest_path_result* result) {
     if (!result) {
         return;
@@ -1271,6 +1433,19 @@ void pwospf_handle_lsu(struct sr_instance* sr, uint8_t* packet, unsigned int len
     printf("[LSU] Flooding LSU to other neighbor except %s.\n", interface);
     pwospf_flood_lsu(sr, packet, len, interface);
 }
+
+/**
+ * @brief Prints the list of computed shortest path entries in human-readable format.
+ *
+ * This function iterates over the linked list of `shortest_path_entry` objects
+ * within the given `shortest_path_result`. For each entry, it converts the
+ * subnet, mask, and next hop from numeric to string form, and then prints the
+ * resulting route details alongside the corresponding interface.
+ *
+ * @param result Pointer to the `shortest_path_result` containing the entries
+ *               to be printed. If `result` or its `entries` field is NULL,
+ *               the function reports that no paths were computed.
+ */
 void print_shortest_paths(struct shortest_path_result* result) {
     if (!result || !result->entries) {
         printf("No shortest paths computed or the result is empty.\n");
@@ -1295,6 +1470,7 @@ void print_shortest_paths(struct shortest_path_result* result) {
     }
     printf("=============================================\n");
 }
+
 /**
  * @brief Removes all non-directly connected routes from the routing table,
  *        preserving directly connected routes and the default route
@@ -1322,6 +1498,7 @@ void clear_non_direct_routes(struct sr_instance* sr) {
         rt = next;
     }
 }
+
 /**
  * @brief Recalculates the routing table based on the current topology graph.
  *
@@ -1401,7 +1578,18 @@ void recalculate_routing_table(struct sr_instance* sr) {
     free_shortest_path_result(shortest_paths);
     sr_print_routing_table(sr);
 }
-// PWOSPF-specific checksum calculation
+/**
+ * @brief Calculates the PWOSPF checksum over a buffer of 16-bit words.
+ *
+ * This function sums the 16-bit words in the provided buffer (converting each
+ * from network byte order to host byte order via `ntohs`), applying carry handling
+ * to wrap around overflow bits. It returns the final one’s complement of the
+ * accumulated sum.
+ *
+ * @param buf   Pointer to the buffer of 16-bit words to be checksummed.
+ * @param count Number of 16-bit words in the buffer.
+ * @return The 16-bit PWOSPF checksum (in host byte order).
+ */
 uint16_t checksum_pwospf(uint16_t* buf, size_t count) {
     uint32_t sum = 0;
 
@@ -1415,6 +1603,20 @@ uint16_t checksum_pwospf(uint16_t* buf, size_t count) {
     return ~((sum & 0xFFFF));  // Finalize checksum
 }
 
+/**
+ * @brief Scans the router’s static routing table and updates the PWOSPF subsystem based on default routes.
+ *
+ * This function iterates through every entry in the router's `sr->routing_table` and prints
+ * each static route’s details: destination, gateway, mask, and interface. If any entry
+ * represents a default route (destination == 0), it checks for a matching PWOSPF interface
+ * with the same name and:
+ *
+ * - Sets that interface's neighbor IP to the gateway address.
+ * - Marks the subsystem as a gateway router (`subsys->is_gw = true`).
+ *
+ * @param sr     Pointer to the main router instance. Must have a valid `routing_table`.
+ * @param subsys Pointer to the PWOSPF subsystem. Updated if a default route is found.
+ */
 void read_static_routes(struct sr_instance* sr, struct pwospf_subsys* subsys) {
     if (!sr->routing_table) {
         printf("Routing table is empty.\n");
@@ -1455,6 +1657,21 @@ void read_static_routes(struct sr_instance* sr, struct pwospf_subsys* subsys) {
     }
 }
 
+/**
+ * @brief Prints the current PWOSPF topology in a tabular format for each router in the subsystem.
+ *
+ * This function iterates over each router in `subsys->topology` and prints:
+ * - A header identifying the router by its Router ID.
+ * - A table listing each interface's subnet (IP & mask), Neighbor Router ID, and next hop.
+ * 
+ * Steps performed:
+ * 1. Convert each router's ID into a string and create a centered header.
+ * 2. For each interface in the router, compute the subnet by bitwise-AND of IP and mask.
+ * 3. Convert the subnet, mask, neighbor router ID, and next hop into human-readable strings.
+ * 4. Print the resulting table rows in a formatted manner.
+ *
+ * @param subsys Pointer to the PWOSPF subsystem containing the `topology` linked list.
+ */
 void print_topology(struct pwospf_subsys* subsys) {
     struct pwospf_router* router = subsys->topology;
     printf("=================================================================================\n");
@@ -1527,6 +1744,17 @@ void print_topology(struct pwospf_subsys* subsys) {
     printf("=================================================================================\n");
 }
 
+/**
+ * @brief Prints debug information for an LSU packet.
+ *
+ * This function prints the Router ID and Neighbor IP of the LSU packet, followed by
+ * a list of the advertised links (subnets, masks, and neighbor IDs).
+ *
+ * @param router_id    Router ID of the OSPF header.
+ * @param neighbor_ip  Neighbor IP address of the LSU packet.
+ * @param num_links    Number of advertised links in the LSU packet.
+ * @param lsu_adv      Pointer to the first advertised link in the LSU packet.
+ */
 void print_lsu_debug_info(uint32_t router_id, uint32_t neighbor_ip, uint32_t num_links, struct ospfv2_lsu* lsu_adv) {
     char router_id_str[INET_ADDRSTRLEN];
     char neighbor_ip_str[INET_ADDRSTRLEN];
@@ -1689,6 +1917,25 @@ struct sr_rt* lookup_routing_table(struct sr_instance* sr, uint32_t ip_target, u
     return NULL;
 }
 
+/**
+ * @brief Checks if a given subnet/mask combination is already implied by existing routes in the routing table.
+ *
+ * This function iterates through the router's current routing table to determine
+ * if a new route would be redundant. It considers two scenarios:
+ *
+ * 1. **Default Route Scenario**: If an entry is the default route (`dest == 0` and `mask == 0`),
+ *    it checks whether `(entry->gw.s_addr & mask) == subnet`. If so, the route is implied
+ *    by the default route.
+ *
+ * 2. **Non-Default Routes**: It checks if `(entry->dest.s_addr & mask) == subnet` and
+ *    `entry->mask.s_addr >= mask`. If this condition holds, an existing route already
+ *    covers or matches the desired subnet/mask.
+ *
+ * @param sr     Pointer to the main router instance (`struct sr_instance`), which contains the routing table.
+ * @param subnet The subnet (in network byte order) to be checked.
+ * @param mask   The subnet mask (in network byte order).
+ * @return `true` if the subnet is already implied by an existing route; `false` otherwise.
+ */
 bool route_already_implied(struct sr_instance* sr, uint32_t subnet, uint32_t mask) {
     char subnet_str[INET_ADDRSTRLEN], mask_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &subnet, subnet_str, INET_ADDRSTRLEN);
